@@ -91,6 +91,13 @@ def patch_distribution_config() -> None:
     cargo_path = ROOT / "src-tauri/Cargo.toml"
     replace_exact(cargo_path, 'version = "0.2.3"', f'version = "{VERSION}"')
 
+    lock_path = ROOT / "src-tauri/Cargo.lock"
+    replace_exact(
+        lock_path,
+        'name = "codex-switcher"\nversion = "0.2.3"',
+        f'name = "codex-switcher"\nversion = "{VERSION}"',
+    )
+
     tauri_path = ROOT / "src-tauri/tauri.conf.json"
     config = json.loads(tauri_path.read_text(encoding="utf-8"))
     config["version"] = VERSION
@@ -131,10 +138,13 @@ def verify() -> None:
     package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
     tauri_config = json.loads((ROOT / "src-tauri/tauri.conf.json").read_text(encoding="utf-8"))
     cargo = (ROOT / "src-tauri/Cargo.toml").read_text(encoding="utf-8")
+    cargo_lock = (ROOT / "src-tauri/Cargo.lock").read_text(encoding="utf-8")
     if package["version"] != VERSION or tauri_config["version"] != VERSION:
         raise RuntimeError("custom build version is inconsistent")
     if f'version = "{VERSION}"' not in cargo:
         raise RuntimeError("Cargo package version was not updated")
+    if f'name = "codex-switcher"\nversion = "{VERSION}"' not in cargo_lock:
+        raise RuntimeError("Cargo lock version was not updated")
     if tauri_config["bundle"]["createUpdaterArtifacts"] is not False:
         raise RuntimeError("updater artifacts must be disabled for the custom build")
 
