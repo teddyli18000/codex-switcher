@@ -24,7 +24,7 @@ jobs:
       - name: Check out branch
         uses: actions/checkout@v4
 
-      - name: Apply manual-usage patch
+      - name: Apply and verify manual-usage patch
         shell: pwsh
         run: |
           python scripts/apply_manual_usage_only.py
@@ -48,23 +48,15 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build frontend
-        run: pnpm build
-
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
           components: rustfmt
 
-      - name: Check Rust formatting
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-
-      - name: Check Rust backend
-        run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
-
       - name: Build Windows setup executable
-        run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis
+        shell: pwsh
+        run: ./scripts/build_windows.ps1
 
       - name: Upload setup artifact
         uses: actions/upload-artifact@v4
