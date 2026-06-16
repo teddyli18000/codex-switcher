@@ -1,0 +1,74 @@
+name: Build manual-usage Windows artifact
+
+on:
+  push:
+    branches:
+      - manual-usage-only
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manual-usage-windows-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+
+      - name: Apply manual-usage patch
+        shell: pwsh
+        run: |
+          python scripts/apply_manual_usage_only.py
+          git diff --check
+          $warmupChanges = git diff --unified=0 | Select-String -Pattern '^[+-].*(warmup|Warmup|WARMUP)'
+          if ($warmupChanges) {
+            throw 'Warm-up-related lines changed unexpectedly.'
+          }
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Check Rust backend
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+
+      - name: Build Windows installers
+        run: pnpm tauri build --target x86_64-pc-windows-msvc
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-switcher-0.2.4-manual-windows
+          path: |
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 14
