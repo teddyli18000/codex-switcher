@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+VERSION = "0.2.4"
 
 
 def replace_exact(path: Path, old: str, new: str, count: int = 1) -> None:
@@ -82,14 +83,22 @@ def patch_native_tray() -> None:
 
 
 def patch_distribution_config() -> None:
-    path = ROOT / "src-tauri/tauri.conf.json"
-    config = json.loads(path.read_text(encoding="utf-8"))
-    config["version"] = "0.2.4"
+    package_path = ROOT / "package.json"
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["version"] = VERSION
+    package_path.write_text(json.dumps(package, indent=2) + "\n", encoding="utf-8")
+
+    cargo_path = ROOT / "src-tauri/Cargo.toml"
+    replace_exact(cargo_path, 'version = "0.2.3"', f'version = "{VERSION}"')
+
+    tauri_path = ROOT / "src-tauri/tauri.conf.json"
+    config = json.loads(tauri_path.read_text(encoding="utf-8"))
+    config["version"] = VERSION
     config["bundle"]["createUpdaterArtifacts"] = False
     config["plugins"]["updater"]["endpoints"] = [
         "https://github.com/teddyli18000/codex-switcher/releases/latest/download/latest.json"
     ]
-    path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    tauri_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
 
 def verify() -> None:
@@ -118,6 +127,16 @@ def verify() -> None:
     ]
     if not all(required):
         raise RuntimeError("manual refresh or warm-up behavior was lost")
+
+    package = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    tauri_config = json.loads((ROOT / "src-tauri/tauri.conf.json").read_text(encoding="utf-8"))
+    cargo = (ROOT / "src-tauri/Cargo.toml").read_text(encoding="utf-8")
+    if package["version"] != VERSION or tauri_config["version"] != VERSION:
+        raise RuntimeError("custom build version is inconsistent")
+    if f'version = "{VERSION}"' not in cargo:
+        raise RuntimeError("Cargo package version was not updated")
+    if tauri_config["bundle"]["createUpdaterArtifacts"] is not False:
+        raise RuntimeError("updater artifacts must be disabled for the custom build")
 
 
 if __name__ == "__main__":
