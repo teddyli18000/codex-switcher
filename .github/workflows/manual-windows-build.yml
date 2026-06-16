@@ -4,12 +4,15 @@ on:
   push:
     branches:
       - manual-usage-only
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
 
 concurrency:
-  group: manual-usage-windows-build
+  group: manual-usage-windows-build-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
