@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: manual-usage-windows-build-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
