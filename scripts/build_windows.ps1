@@ -5,3 +5,5 @@ $buildExitCode = $LASTEXITCODE
 
 Set-Content -Path tauri-build-exit-code.txt -Value $buildExitCode
 Get-Content tauri-build.log -Tail 180
+
+exit 0
