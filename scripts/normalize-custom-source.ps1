@@ -1,3 +1,4 @@
+# Normalize the one source block that uses six-space indentation.
 $path = 'src/hooks/useAccounts.ts'
 $text = (Get-Content $path -Raw).Replace("`r`n", "`n")
 $text = $text.Replace(
