@@ -138,4 +138,20 @@ Replace-Exact -Path $app -Description 'Disable usage refresh after full backup i
       const maskedIds = await loadMaskedAccountIds();
 '@
 
-Write-Host 'Manual-only usage refresh patch applied successfully.'
+Replace-Exact -Path $app -Description 'Remove automatic update checker import' -Old @'
+import { AccountCard, AddAccountModal, UpdateChecker } from "./components";
+'@ -New @'
+import { AccountCard, AddAccountModal } from "./components";
+'@
+
+Replace-Exact -Path $app -Description 'Remove automatic update checker mount' -Old @'
+      <UpdateChecker />
+
+'@ -New @'
+'@
+
+if ((Get-Content $app -Raw) -match 'UpdateChecker') {
+  throw 'Automatic update checker is still mounted.'
+}
+
+Write-Host 'Manual-only usage refresh patch applied; automatic update check disabled.'
