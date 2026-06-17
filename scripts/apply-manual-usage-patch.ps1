@@ -1,157 +1,39 @@
 $ErrorActionPreference = 'Stop'
 
-function Replace-Exact {
+function Replace-Regex {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
-    [Parameter(Mandatory = $true)][string]$Old,
-    [Parameter(Mandatory = $true)][string]$New,
-    [Parameter(Mandatory = $true)][string]$Description
+    [Parameter(Mandatory = $true)][string]$Pattern,
+    [Parameter(Mandatory = $true)][string]$Replacement,
+    [Parameter(Mandatory = $true)][int]$ExpectedCount
   )
 
-  $content = Get-Content $Path -Raw
-  $count = ([regex]::Matches($content, [regex]::Escape($Old))).Count
-  if ($count -ne 1) {
-    throw "$Description: expected exactly one match in $Path, found $count"
+  $text = Get-Content $Path -Raw
+  $regex = [regex]::new($Pattern, [System.Text.RegularExpressions.RegexOptions]::Multiline)
+  $count = $regex.Matches($text).Count
+  if ($count -ne $ExpectedCount) {
+    throw "Unexpected source in $Path: expected $ExpectedCount match(es), found $count"
   }
-  $content = $content.Replace($Old, $New)
-  Set-Content -Path $Path -Value $content -Encoding utf8 -NoNewline
+  $updated = $regex.Replace($text, $Replacement)
+  Set-Content -Path $Path -Value $updated -Encoding utf8 -NoNewline
 }
 
 $hook = 'src/hooks/useAccounts.ts'
 $app = 'src/App.tsx'
 
-Replace-Exact -Path $hook -Description 'Disable usage refresh after auth.json import' -Old @'
-        const accountList = await loadAccounts();
-        await refreshUsage(accountList);
-      } catch (err) {
-        throw err;
-      }
-    },
-    [loadAccounts, refreshUsage]
-  );
+Replace-Regex $hook '        const accountList = await loadAccounts\(\);\r?\n        await refreshUsage\(accountList\);' '        await loadAccounts();' 4
+Replace-Regex $hook 'loadAccounts, refreshUsage' 'loadAccounts' 5
+Replace-Regex $hook '  useEffect\(\(\) => \{\r?\n    loadAccounts\(\)\.then\(\(accountList\) => refreshUsage\(accountList\)\);\r?\n\s*\r?\n    // Auto-refresh usage every 60 seconds \(same as official Codex CLI\)\r?\n    const interval = setInterval\(\(\) => \{\r?\n      refreshUsage\(\)\.catch\(\(\) => \{\}\);\r?\n    \}, 60000\);\r?\n\s*\r?\n    return \(\) => clearInterval\(interval\);\r?\n  \}, \[loadAccounts\]\);' "  useEffect(() => {`n    void loadAccounts();`n  }, [loadAccounts]);" 1
 
-  const startOAuthLogin
-'@ -New @'
-        await loadAccounts();
-      } catch (err) {
-        throw err;
-      }
-    },
-    [loadAccounts]
-  );
+Replace-Regex $app 'import \{ AccountCard, AddAccountModal, UpdateChecker \} from "\./components";' 'import { AccountCard, AddAccountModal } from "./components";' 1
+Replace-Regex $app '      const accountList = await loadAccounts\(\);\r?\n      await refreshUsage\(accountList\);' '      await loadAccounts();' 1
+Replace-Regex $app '      <UpdateChecker />\r?\n\r?\n' '' 1
 
-  const startOAuthLogin
-'@
+$hookText = Get-Content $hook -Raw
+$appText = Get-Content $app -Raw
+if ($hookText -match '60000|refreshUsage\(accountList\)|loadAccounts\(\)\.then') { throw 'Automatic usage refresh remains.' }
+if ($appText -match 'UpdateChecker|refreshUsage\(accountList\)') { throw 'Automatic update or usage refresh remains in App.' }
+if ($hookText -notmatch 'const refreshSingleUsage' -or $appText -notmatch 'await refreshUsage\(\)') { throw 'Manual refresh path is missing.' }
+if ($hookText -notmatch 'warmup_account' -or $hookText -notmatch 'warmup_all_accounts') { throw 'Warmup path changed unexpectedly.' }
 
-Replace-Exact -Path $hook -Description 'Disable usage refresh after OAuth login' -Old @'
-      const account = await invokeBackend<AccountInfo>("complete_login");
-      const accountList = await loadAccounts();
-      await refreshUsage(accountList);
-      return account;
-    } catch (err) {
-      throw err;
-    }
-  }, [loadAccounts, refreshUsage]);
-'@ -New @'
-      const account = await invokeBackend<AccountInfo>("complete_login");
-      await loadAccounts();
-      return account;
-    } catch (err) {
-      throw err;
-    }
-  }, [loadAccounts]);
-'@
-
-Replace-Exact -Path $hook -Description 'Disable usage refresh after slim import' -Old @'
-        const accountList = await loadAccounts();
-        await refreshUsage(accountList);
-        return summary;
-      } catch (err) {
-        throw err;
-      }
-    },
-    [loadAccounts, refreshUsage]
-  );
-
-  const exportAccountsFullEncryptedFile
-'@ -New @'
-        await loadAccounts();
-        return summary;
-      } catch (err) {
-        throw err;
-      }
-    },
-    [loadAccounts]
-  );
-
-  const exportAccountsFullEncryptedFile
-'@
-
-Replace-Exact -Path $hook -Description 'Disable usage refresh after full encrypted import' -Old @'
-        const accountList = await loadAccounts();
-        await refreshUsage(accountList);
-        return summary;
-      } catch (err) {
-        throw err;
-      }
-    },
-    [loadAccounts, refreshUsage]
-  );
-
-  const cancelOAuthLogin
-'@ -New @'
-        await loadAccounts();
-        return summary;
-      } catch (err) {
-        throw err;
-      }
-    },
-    [loadAccounts]
-  );
-
-  const cancelOAuthLogin
-'@
-
-Replace-Exact -Path $hook -Description 'Disable startup and periodic usage refresh' -Old @'
-  useEffect(() => {
-    loadAccounts().then((accountList) => refreshUsage(accountList));
-    
-    // Auto-refresh usage every 60 seconds (same as official Codex CLI)
-    const interval = setInterval(() => {
-      refreshUsage().catch(() => {});
-    }, 60000);
-    
-    return () => clearInterval(interval);
-  }, [loadAccounts, refreshUsage]);
-'@ -New @'
-  useEffect(() => {
-    void loadAccounts();
-  }, [loadAccounts]);
-'@
-
-Replace-Exact -Path $app -Description 'Disable usage refresh after full backup import' -Old @'
-      const accountList = await loadAccounts();
-      await refreshUsage(accountList);
-      const maskedIds = await loadMaskedAccountIds();
-'@ -New @'
-      await loadAccounts();
-      const maskedIds = await loadMaskedAccountIds();
-'@
-
-Replace-Exact -Path $app -Description 'Remove automatic update checker import' -Old @'
-import { AccountCard, AddAccountModal, UpdateChecker } from "./components";
-'@ -New @'
-import { AccountCard, AddAccountModal } from "./components";
-'@
-
-Replace-Exact -Path $app -Description 'Remove automatic update checker mount' -Old @'
-      <UpdateChecker />
-
-'@ -New @'
-'@
-
-if ((Get-Content $app -Raw) -match 'UpdateChecker') {
-  throw 'Automatic update checker is still mounted.'
-}
-
-Write-Host 'Manual-only usage refresh patch applied; automatic update check disabled.'
+Write-Host 'Custom patch applied successfully.'
