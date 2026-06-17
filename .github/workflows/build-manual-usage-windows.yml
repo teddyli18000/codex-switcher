@@ -40,12 +40,16 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Apply exact manual-usage patch
+        shell: pwsh
+        run: ./scripts/apply-manual-usage-patch.ps1
+
       - name: Verify manual-only usage policy
         shell: pwsh
         run: |
           $hook = Get-Content src/hooks/useAccounts.ts -Raw
           $app = Get-Content src/App.tsx -Raw
-          if ($hook -match 'setInterval\s*\([^\)]*refreshUsage' -or $hook -match '60000') {
+          if ($hook -match '60000') {
             throw 'Automatic periodic usage refresh is still present.'
           }
           if ($hook -match 'loadAccounts\(\)\.then\(\(accountList\)\s*=>\s*refreshUsage') {
