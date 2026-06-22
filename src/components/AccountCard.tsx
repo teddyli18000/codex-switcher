@@ -270,13 +270,13 @@ export function AccountCard({
           onClick={() => {
             void handleResetCards();
           }}
-          disabled={isFetchingResetCards || account.auth_mode !== "chat_g_p_t"}
+          disabled={isFetchingResetCards || account.auth_mode !== "chat_gpt"}
           className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
             isFetchingResetCards
               ? "bg-violet-100 dark:bg-violet-900/30 text-violet-500 dark:text-violet-300"
               : "bg-violet-50 dark:bg-violet-900/20 hover:bg-violet-100 dark:hover:bg-violet-900/40 text-violet-700 dark:text-violet-300"
           } disabled:opacity-50`}
-          title={account.auth_mode === "chat_g_p_t" ? "Fetch reset cards manually" : "Reset cards are only available for ChatGPT accounts"}
+          title={account.auth_mode === "chat_gpt" ? "Fetch reset cards manually" : "Reset cards are only available for ChatGPT accounts"}
         >
           {isFetchingResetCards ? "Cards..." : "Cards"}
         </button>
