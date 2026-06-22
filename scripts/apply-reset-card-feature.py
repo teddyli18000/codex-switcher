@@ -49,20 +49,21 @@ def patch_manual_usage() -> None:
         count=1,
     )
     write(app_path, app)
-
     verify_manual_usage()
 
 
 def patch_backend() -> None:
     api_path = "src-tauri/src/api/usage.rs"
     usage = read(api_path)
-    usage = replace_once(
-        usage,
-        'const CHATGPT_CODEX_RESPONSES_API: &str = "https://chatgpt.com/backend-api/codex/responses";\n',
-        'const CHATGPT_CODEX_RESPONSES_API: &str = "https://chatgpt.com/backend-api/codex/responses";\nconst CHATGPT_RESET_CARDS_API: &str =\n    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";\n',
-        "reset card endpoint constant",
-    )
-    backend_block = r'''
+    if "CHATGPT_RESET_CARDS_API" not in usage:
+        usage = replace_once(
+            usage,
+            'const CHATGPT_CODEX_RESPONSES_API: &str = "https://chatgpt.com/backend-api/codex/responses";\n',
+            'const CHATGPT_CODEX_RESPONSES_API: &str = "https://chatgpt.com/backend-api/codex/responses";\nconst CHATGPT_RESET_CARDS_API: &str =\n    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";\n',
+            "reset card endpoint constant",
+        )
+    if "get_account_reset_cards_terminal_output" not in usage:
+        backend_block = r'''
 /// Fetch Codex reset-card information and return terminal-style output.
 pub async fn get_account_reset_cards_terminal_output(account: &StoredAccount) -> Result<String> {
     match &account.auth_data {
@@ -97,8 +98,6 @@ async fn send_chatgpt_reset_cards_request(
     let client = reqwest::Client::new();
     let mut headers = build_chatgpt_headers(access_token, chatgpt_account_id)?;
 
-    // Some ChatGPT backend endpoints accept this account routing header. Keep the
-    // existing chatgpt-account-id header too so the known-good usage flow is not disturbed.
     if let Some(account_id) = chatgpt_account_id {
         if let Ok(header_name) = HeaderName::from_bytes(b"OpenAI-Account") {
             headers.insert(
@@ -160,23 +159,25 @@ async fn format_reset_cards_terminal_output(
 }
 
 '''
-    usage = replace_once(
-        usage,
-        "/// Refresh all account usage\npub async fn refresh_all_usage",
-        backend_block + "/// Refresh all account usage\npub async fn refresh_all_usage",
-        "reset card API implementation insertion point",
-    )
+        usage = replace_once(
+            usage,
+            "/// Refresh all account usage\npub async fn refresh_all_usage",
+            backend_block + "/// Refresh all account usage\npub async fn refresh_all_usage",
+            "reset card API implementation insertion point",
+        )
     write(api_path, usage)
 
     command_path = "src-tauri/src/commands/usage.rs"
     commands = read(command_path)
-    commands = replace_once(
-        commands,
-        "use crate::api::usage::{get_account_usage, refresh_all_usage, warmup_account as send_warmup};\n",
-        "use crate::api::usage::get_account_reset_cards_terminal_output;\nuse crate::api::usage::{get_account_usage, refresh_all_usage, warmup_account as send_warmup};\n",
-        "usage command imports",
-    )
-    command_block = r'''
+    if "get_account_reset_cards_terminal_output" not in commands:
+        commands = replace_once(
+            commands,
+            "use crate::api::usage::{get_account_usage, refresh_all_usage, warmup_account as send_warmup};\n",
+            "use crate::api::usage::get_account_reset_cards_terminal_output;\nuse crate::api::usage::{get_account_usage, refresh_all_usage, warmup_account as send_warmup};\n",
+            "usage command imports",
+        )
+    if "pub async fn get_reset_cards" not in commands:
+        command_block = r'''
 /// Get terminal-style Codex reset-card output for one account.
 #[tauri::command]
 pub async fn get_reset_cards(account_id: String) -> Result<String, String> {
@@ -190,49 +191,54 @@ pub async fn get_reset_cards(account_id: String) -> Result<String, String> {
 }
 
 '''
-    commands = replace_once(
-        commands,
-        "/// Refresh usage info for all accounts\n#[tauri::command]",
-        command_block + "/// Refresh usage info for all accounts\n#[tauri::command]",
-        "reset card command insertion point",
-    )
+        commands = replace_once(
+            commands,
+            "/// Refresh usage info for all accounts\n#[tauri::command]",
+            command_block + "/// Refresh usage info for all accounts\n#[tauri::command]",
+            "reset card command insertion point",
+        )
     write(command_path, commands)
 
     lib_path = "src-tauri/src/lib.rs"
     lib = read(lib_path)
-    lib = replace_once(
-        lib,
-        "get_masked_account_ids, get_usage, import_accounts_full_encrypted_file,",
-        "get_masked_account_ids, get_reset_cards, get_usage, import_accounts_full_encrypted_file,",
-        "lib command import",
-    )
-    lib = replace_once(
-        lib,
-        "            get_usage,\n            refresh_all_accounts_usage,",
-        "            get_usage,\n            get_reset_cards,\n            refresh_all_accounts_usage,",
-        "lib invoke handler",
-    )
+    if "get_reset_cards" not in lib.split("};", 1)[0]:
+        lib = replace_once(
+            lib,
+            "get_masked_account_ids, get_usage, import_accounts_full_encrypted_file,",
+            "get_masked_account_ids, get_reset_cards, get_usage, import_accounts_full_encrypted_file,",
+            "lib command import",
+        )
+    if "            get_reset_cards," not in lib:
+        lib = replace_once(
+            lib,
+            "            get_usage,\n            refresh_all_accounts_usage,",
+            "            get_usage,\n            get_reset_cards,\n            refresh_all_accounts_usage,",
+            "lib invoke handler",
+        )
     write(lib_path, lib)
-
     verify_backend()
 
 
 def patch_frontend() -> None:
     path = "src/components/AccountCard.tsx"
     card = read(path)
-    card = replace_once(
-        card,
-        'import type { AccountWithUsage } from "../types";\n',
-        'import type { AccountWithUsage } from "../types";\nimport { invokeBackend } from "../lib/platform";\n',
-        "AccountCard platform import",
-    )
-    card = replace_once(
-        card,
-        "  const [isEditing, setIsEditing] = useState(false);\n  const [editName, setEditName] = useState(account.name);",
-        "  const [isEditing, setIsEditing] = useState(false);\n  const [editName, setEditName] = useState(account.name);\n  const [isResetCardOpen, setIsResetCardOpen] = useState(false);\n  const [isFetchingResetCards, setIsFetchingResetCards] = useState(false);\n  const [resetCardOutput, setResetCardOutput] = useState(\"\");",
-        "reset card state",
-    )
-    handler = r'''
+    card = card.replace('"chat_g_p_t"', '"chat_gpt"')
+    if 'import { invokeBackend } from "../lib/platform";' not in card:
+        card = replace_once(
+            card,
+            'import type { AccountWithUsage } from "../types";\n',
+            'import type { AccountWithUsage } from "../types";\nimport { invokeBackend } from "../lib/platform";\n',
+            "AccountCard platform import",
+        )
+    if "isResetCardOpen" not in card:
+        card = replace_once(
+            card,
+            "  const [isEditing, setIsEditing] = useState(false);\n  const [editName, setEditName] = useState(account.name);",
+            "  const [isEditing, setIsEditing] = useState(false);\n  const [editName, setEditName] = useState(account.name);\n  const [isResetCardOpen, setIsResetCardOpen] = useState(false);\n  const [isFetchingResetCards, setIsFetchingResetCards] = useState(false);\n  const [resetCardOutput, setResetCardOutput] = useState(\"\");",
+            "reset card state",
+        )
+    if "const handleResetCards" not in card:
+        handler = r'''
   const handleResetCards = async () => {
     setIsResetCardOpen(true);
     setIsFetchingResetCards(true);
@@ -252,43 +258,33 @@ def patch_frontend() -> None:
   };
 
 '''
-    card = replace_once(
-        card,
-        "  const handleRename = async () => {\n",
-        handler + "  const handleRename = async () => {\n",
-        "reset card click handler",
-    )
-    button = r'''        <button
+        card = replace_once(card, "  const handleRename = async () => {\n", handler + "  const handleRename = async () => {\n", "reset card handler")
+    if "Fetch reset cards manually" not in card:
+        button = r'''        <button
           onClick={() => {
             void handleResetCards();
           }}
-          disabled={isFetchingResetCards || account.auth_mode !== "chat_g_p_t"}
+          disabled={isFetchingResetCards || account.auth_mode !== "chat_gpt"}
           className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
             isFetchingResetCards
               ? "bg-violet-100 dark:bg-violet-900/30 text-violet-500 dark:text-violet-300"
               : "bg-violet-50 dark:bg-violet-900/20 hover:bg-violet-100 dark:hover:bg-violet-900/40 text-violet-700 dark:text-violet-300"
           } disabled:opacity-50`}
-          title={account.auth_mode === "chat_g_p_t" ? "Fetch reset cards manually" : "Reset cards are only available for ChatGPT accounts"}
+          title={account.auth_mode === "chat_gpt" ? "Fetch reset cards manually" : "Reset cards are only available for ChatGPT accounts"}
         >
           {isFetchingResetCards ? "Cards..." : "Cards"}
         </button>
 '''
-    card = replace_once(
-        card,
-        "        <button\n          onClick={handleRefresh}",
-        button + "        <button\n          onClick={handleRefresh}",
-        "reset card button",
-    )
-    modal = r'''
+        card = replace_once(card, "        <button\n          onClick={handleRefresh}", button + "        <button\n          onClick={handleRefresh}", "reset card button")
+    if "fixed inset-0 z-50" not in card:
+        modal = r'''
 
       {isResetCardOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6">
           <div className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900">
             <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-5 py-4 dark:border-gray-800">
               <div className="min-w-0">
-                <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
-                  Reset cards
-                </h2>
+                <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">Reset cards</h2>
                 <p className="mt-1 truncate text-sm text-gray-500 dark:text-gray-400">
                   {account.name}{account.email ? ` · ${account.email}` : ""}
                 </p>
@@ -309,14 +305,8 @@ def patch_frontend() -> None:
         </div>
       )}
 '''
-    card = replace_once(
-        card,
-        "      </div>\n    </div>\n  );\n}",
-        "      </div>" + modal + "\n    </div>\n  );\n}",
-        "reset card modal",
-    )
+        card = replace_once(card, "      </div>\n    </div>\n  );\n}", "      </div>" + modal + "\n    </div>\n  );\n}", "reset card modal")
     write(path, card)
-
     verify_frontend()
 
 
@@ -337,28 +327,28 @@ def verify_backend() -> None:
     usage = read("src-tauri/src/api/usage.rs")
     commands = read("src-tauri/src/commands/usage.rs")
     lib = read("src-tauri/src/lib.rs")
-    required = [
+    if not all([
         "CHATGPT_RESET_CARDS_API" in usage,
         "get_account_reset_cards_terminal_output" in usage,
         "Complete response body" in usage,
         "get_reset_cards" in commands,
         "get_reset_cards" in lib,
-    ]
-    if not all(required):
+    ]):
         raise RuntimeError("reset card backend command is incomplete")
 
 
 def verify_frontend() -> None:
     card = read("src/components/AccountCard.tsx")
-    required = [
+    if '"chat_g_p_t"' in card:
+        raise RuntimeError("invalid ChatGPT auth mode literal remains")
+    if not all([
         "get_reset_cards" in card,
         "isResetCardOpen" in card,
         "Reset cards" in card,
         "account.name" in card,
         "account.email" in card,
         "whitespace-pre-wrap" in card,
-    ]
-    if not all(required):
+    ]):
         raise RuntimeError("reset card frontend is incomplete")
 
 
@@ -372,7 +362,6 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("stage", choices=["manual", "backend", "frontend", "verify"])
     args = parser.parse_args()
-
     if args.stage == "manual":
         patch_manual_usage()
     elif args.stage == "backend":
