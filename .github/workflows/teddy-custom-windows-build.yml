@@ -1,0 +1,110 @@
+name: Build Teddy custom Codex Switcher
+
+on:
+  push:
+    branches:
+      - teddy/manual-usage-reset-cards
+
+permissions:
+  contents: write
+
+concurrency:
+  group: teddy-custom-windows-build
+  cancel-in-progress: true
+
+jobs:
+  apply-and-build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: teddy/manual-usage-reset-cards
+          fetch-depth: 0
+
+      - name: Apply Teddy customizations
+        shell: pwsh
+        run: |
+          python scripts/apply_teddy_customizations.py
+          git diff --check
+          $warmupChanges = git diff --unified=0 | Select-String -Pattern '^[+-].*(warmup|Warmup|WARMUP)'
+          if ($warmupChanges) {
+            $warmupChanges | ForEach-Object { Write-Error $_.Line }
+            throw 'Warm-up-related lines changed unexpectedly.'
+          }
+
+      - name: Commit landed source changes
+        shell: pwsh
+        run: |
+          git config user.name 'Teddy Lee'
+          git config user.email 'teddyli18000@gmail.com'
+
+          git add src/hooks/useAccounts.ts src/TrayMenu.tsx src/App.tsx src-tauri/src/tray.rs
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m 'Make usage queries manual only'
+          }
+
+          git add src-tauri/src/api/usage.rs src-tauri/src/commands/usage.rs src-tauri/src/lib.rs
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m 'Add manual reset card lookup command'
+          }
+
+          git add src/components/AccountCard.tsx
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m 'Add reset card lookup button'
+          }
+
+          git add scripts/apply_teddy_customizations.py .github/workflows/teddy-custom-windows-build.yml
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m 'Add reproducible Teddy custom build workflow [skip ci]'
+          }
+
+          git push origin HEAD:teddy/manual-usage-reset-cards
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Check Rust backend
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+
+      - name: Build Windows setup executable
+        shell: pwsh
+        run: |
+          pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --no-sign
+
+      - name: Upload setup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-switcher-teddy-manual-usage-reset-cards-windows
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14
