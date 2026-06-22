@@ -172,8 +172,8 @@ async fn format_reset_cards_terminal_output(
     commands = read(command_path)
     commands = replace_once(
         commands,
-        "use crate::api::usage::{get_account_usage, refresh_all_usage, warmup_account as send_warmup};",
-        "use crate::api::usage::{\n    get_account_reset_cards_terminal_output, get_account_usage, refresh_all_usage,\n    warmup_account as send_warmup,\n};",
+        "use crate::api::usage::{get_account_usage, refresh_all_usage, warmup_account as send_warmup};\n",
+        "use crate::api::usage::get_account_reset_cards_terminal_output;\nuse crate::api::usage::{get_account_usage, refresh_all_usage, warmup_account as send_warmup};\n",
         "usage command imports",
     )
     command_block = r'''
