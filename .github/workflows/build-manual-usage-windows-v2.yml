@@ -1,0 +1,111 @@
+name: Build manual-usage Windows installer v2
+
+on:
+  pull_request:
+    branches:
+      - cs-manual-usage-20260617-base
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Normalize source variant
+        shell: pwsh
+        run: ./scripts/normalize-custom-source.ps1
+
+      - name: Apply custom source changes
+        shell: pwsh
+        run: ./scripts/apply-manual-usage-patch.ps1
+
+      - name: Verify behavior
+        shell: pwsh
+        run: |
+          $hook = Get-Content src/hooks/useAccounts.ts -Raw
+          $app = Get-Content src/App.tsx -Raw
+          $components = Get-Content src/components/index.ts -Raw
+          if ($hook -match '60000') { throw 'Periodic usage refresh remains.' }
+          if ($hook -match 'loadAccounts\(\)\.then\(\(accountList\)\s*=>\s*refreshUsage') { throw 'Startup usage refresh remains.' }
+          if ($hook -match 'await\s+refreshUsage\s*\(\s*accountList\s*\)') { throw 'Hook import refresh remains.' }
+          if ($app -match 'await\s+refreshUsage\s*\(\s*accountList\s*\)') { throw 'App import refresh remains.' }
+          if ($hook -notmatch 'const\s+refreshSingleUsage') { throw 'Single-account manual refresh is missing.' }
+          if ($app -notmatch 'await\s+refreshUsage\s*\(\s*\)') { throw 'Global manual refresh is missing.' }
+          if ($hook -notmatch 'warmup_account' -or $hook -notmatch 'warmup_all_accounts') { throw 'Warmup changed unexpectedly.' }
+          if (Test-Path src/components/UpdateChecker.tsx) { throw 'Update checker source still exists.' }
+          if ($components -notmatch 'function\s+UpdateChecker\(\)\s*\{\s*return null;') { throw 'No-op compatibility component is missing.' }
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Check Rust backend
+        run: cargo check --manifest-path src-tauri/Cargo.toml --locked
+
+      - name: Disable updater artifact signing for local build
+        shell: pwsh
+        run: |
+          $path = 'src-tauri/tauri.conf.json'
+          $config = Get-Content $path -Raw | ConvertFrom-Json
+          $config.bundle.createUpdaterArtifacts = $false
+          $config | ConvertTo-Json -Depth 100 | Set-Content $path -Encoding utf8
+
+      - name: Build Windows bundles
+        run: pnpm exec tauri build
+
+      - name: Collect installers and checksums
+        shell: pwsh
+        run: |
+          $out = 'manual-usage-windows'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $files = Get-ChildItem 'src-tauri/target/release/bundle' -Recurse -File | Where-Object { $_.Extension -in '.exe', '.msi' }
+          if (-not $files) { throw 'No Windows installer was produced.' }
+          foreach ($file in $files) { Copy-Item $file.FullName -Destination $out }
+          Get-ChildItem $out -File | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($_.Name)" | Add-Content "$out/SHA256SUMS.txt"
+          }
+          @(
+            'Base: upstream v0.2.2 commit 1803f7f021c627b1142d443984787a25e9928d6b'
+            "Source commit: $env:GITHUB_SHA"
+            'Usage refresh: manual only'
+            'Automatic update checker source: removed'
+            'Warmup: unchanged'
+            'Account storage: unchanged'
+          ) | Set-Content "$out/BUILD-MANIFEST.txt"
+
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-switcher-0.2.2-manual-usage-windows-v2
+          path: manual-usage-windows/*
+          if-no-files-found: error
+          retention-days: 14

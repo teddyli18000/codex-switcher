@@ -1,0 +1,37 @@
+name: Diagnose custom patch
+
+on:
+  pull_request:
+    branches:
+      - cs-manual-usage-20260617-base
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run patch and capture error
+        id: run_patch
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          try {
+            ./scripts/apply-manual-usage-patch.ps1
+            'ok' | Set-Content patch-result.txt
+          } catch {
+            $_ | Out-String | Set-Content patch-result.txt
+            exit 1
+          }
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-result
+          path: patch-result.txt
+          if-no-files-found: error
+          retention-days: 3

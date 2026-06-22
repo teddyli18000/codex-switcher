@@ -1,0 +1,121 @@
+name: Build develop reset-card installer
+
+on:
+  push:
+    branches:
+      - develop
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: develop-reset-card-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out develop
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: Configure git
+        shell: pwsh
+        run: |
+          git config user.name 'Teddy Lee'
+          git config user.email 'teddyli18000@gmail.com'
+
+      - name: Restore known-good manual usage source
+        shell: pwsh
+        run: |
+          python scripts/apply-reset-card-feature.py manual
+          git diff --check
+          git add src/hooks/useAccounts.ts src/App.tsx
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m 'Restore manual-only usage refresh source [skip ci]'
+          }
+
+      - name: Add reset card backend command
+        shell: pwsh
+        run: |
+          python scripts/apply-reset-card-feature.py backend
+          git diff --check
+          git add src-tauri/src/api/usage.rs src-tauri/src/commands/usage.rs src-tauri/src/lib.rs
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m 'Add manual reset card backend command [skip ci]'
+          }
+
+      - name: Add reset card button and modal
+        shell: pwsh
+        run: |
+          python scripts/apply-reset-card-feature.py frontend
+          git diff --check
+          git add src/components/AccountCard.tsx
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m 'Add manual reset card button and modal [skip ci]'
+          }
+
+      - name: Verify custom behavior
+        shell: pwsh
+        run: |
+          python scripts/apply-reset-card-feature.py verify
+          $warmupChanges = git diff HEAD~3..HEAD --unified=0 | Select-String -Pattern '^[+-].*(warmup|Warmup|WARMUP)'
+          if ($warmupChanges) {
+            $warmupChanges | ForEach-Object { Write-Error $_.Line }
+            throw 'Warm-up-related lines changed unexpectedly.'
+          }
+
+      - name: Push landed develop commits
+        shell: pwsh
+        run: git push origin HEAD:develop
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Check Rust backend
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+
+      - name: Build Windows setup executable
+        run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --no-sign
+
+      - name: Upload setup executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-switcher-develop-reset-cards-setup
+          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14
