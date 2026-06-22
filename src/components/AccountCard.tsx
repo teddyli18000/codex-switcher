@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import type { AccountWithUsage } from "../types";
+import { invokeBackend } from "../lib/platform";
 import { UsageBar } from "./UsageBar";
 
 interface AccountCardProps {
@@ -57,6 +58,9 @@ export function AccountCard({
   );
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(account.name);
+  const [isResetCardOpen, setIsResetCardOpen] = useState(false);
+  const [isFetchingResetCards, setIsFetchingResetCards] = useState(false);
+  const [resetCardOutput, setResetCardOutput] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -73,6 +77,25 @@ export function AccountCard({
       setLastRefresh(new Date());
     } finally {
       setIsRefreshing(false);
+    }
+  };
+
+
+  const handleResetCards = async () => {
+    setIsResetCardOpen(true);
+    setIsFetchingResetCards(true);
+    setResetCardOutput("Fetching reset cards...");
+
+    try {
+      const output = await invokeBackend<string>("get_reset_cards", {
+        accountId: account.id,
+      });
+      setResetCardOutput(output);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setResetCardOutput(`Error: ${message}`);
+    } finally {
+      setIsFetchingResetCards(false);
     }
   };
 
@@ -244,6 +267,20 @@ export function AccountCard({
           ⚡
         </button>
         <button
+          onClick={() => {
+            void handleResetCards();
+          }}
+          disabled={isFetchingResetCards || account.auth_mode !== "chat_g_p_t"}
+          className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+            isFetchingResetCards
+              ? "bg-violet-100 dark:bg-violet-900/30 text-violet-500 dark:text-violet-300"
+              : "bg-violet-50 dark:bg-violet-900/20 hover:bg-violet-100 dark:hover:bg-violet-900/40 text-violet-700 dark:text-violet-300"
+          } disabled:opacity-50`}
+          title={account.auth_mode === "chat_g_p_t" ? "Fetch reset cards manually" : "Reset cards are only available for ChatGPT accounts"}
+        >
+          {isFetchingResetCards ? "Cards..." : "Cards"}
+        </button>
+        <button
           onClick={handleRefresh}
           disabled={isRefreshing}
           className={`px-3 py-2 text-sm rounded-lg transition-colors ${
@@ -263,6 +300,35 @@ export function AccountCard({
           ✕
         </button>
       </div>
+
+      {isResetCardOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4 py-6">
+          <div className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900">
+            <div className="flex items-start justify-between gap-4 border-b border-gray-100 px-5 py-4 dark:border-gray-800">
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                  Reset cards
+                </h2>
+                <p className="mt-1 truncate text-sm text-gray-500 dark:text-gray-400">
+                  {account.name}{account.email ? ` · ${account.email}` : ""}
+                </p>
+              </div>
+              <button
+                onClick={() => setIsResetCardOpen(false)}
+                className="rounded-lg px-3 py-1.5 text-sm font-medium text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100"
+              >
+                Close
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto bg-gray-950 p-4">
+              <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-gray-100">
+                {resetCardOutput}
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }
