@@ -4,12 +4,15 @@ on:
   push:
     branches:
       - develop
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
 
 concurrency:
-  group: develop-reset-card-build
+  group: develop-reset-card-build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
