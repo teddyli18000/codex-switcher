@@ -4,12 +4,15 @@ on:
   push:
     branches:
       - teddy/manual-usage-reset-cards
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
 
 concurrency:
-  group: teddy-custom-windows-build
+  group: teddy-custom-windows-build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
