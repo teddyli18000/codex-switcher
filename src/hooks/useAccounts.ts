@@ -244,13 +244,12 @@ export function useAccounts() {
             contents,
           });
         }
-        const accountList = await loadAccounts();
-        await refreshUsage(accountList);
+        await loadAccounts();
       } catch (err) {
         throw err;
       }
     },
-    [loadAccounts, refreshUsage]
+    [loadAccounts]
   );
 
   const startOAuthLogin = useCallback(async (accountName: string) => {
@@ -268,13 +267,12 @@ export function useAccounts() {
   const completeOAuthLogin = useCallback(async () => {
     try {
       const account = await invokeBackend<AccountInfo>("complete_login");
-      const accountList = await loadAccounts();
-      await refreshUsage(accountList);
+        await loadAccounts();
       return account;
     } catch (err) {
       throw err;
     }
-  }, [loadAccounts, refreshUsage]);
+  }, [loadAccounts]);
 
   const exportAccountsSlimText = useCallback(async () => {
     try {
@@ -290,14 +288,13 @@ export function useAccounts() {
         const summary = await invokeBackend<ImportAccountsSummary>("import_accounts_slim_text", {
           payload,
         });
-        const accountList = await loadAccounts();
-        await refreshUsage(accountList);
+        await loadAccounts();
         return summary;
       } catch (err) {
         throw err;
       }
     },
-    [loadAccounts, refreshUsage]
+    [loadAccounts]
   );
 
   const exportAccountsFullEncryptedFile = useCallback(
@@ -318,14 +315,13 @@ export function useAccounts() {
           "import_accounts_full_encrypted_file",
           { path }
         );
-        const accountList = await loadAccounts();
-        await refreshUsage(accountList);
+        await loadAccounts();
         return summary;
       } catch (err) {
         throw err;
       }
     },
-    [loadAccounts, refreshUsage]
+    [loadAccounts]
   );
 
   const cancelOAuthLogin = useCallback(async () => {
@@ -362,7 +358,7 @@ export function useAccounts() {
     }, 60000);
     
     return () => clearInterval(interval);
-  }, [loadAccounts, refreshUsage]);
+  }, [loadAccounts]);
 
   return {
     accounts,

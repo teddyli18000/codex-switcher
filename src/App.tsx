@@ -390,8 +390,7 @@ function App() {
       setIsImportingFull(true);
       const summary = await importFullBackupFile();
       if (!summary) return;
-      const accountList = await loadAccounts();
-      await refreshUsage(accountList);
+      await loadAccounts();
       const maskedIds = await loadMaskedAccountIds();
       setMaskedAccounts(new Set(maskedIds));
       showWarmupToast(
