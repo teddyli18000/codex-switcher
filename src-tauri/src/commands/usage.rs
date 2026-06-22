@@ -1,5 +1,6 @@
 //! Usage query Tauri commands
 
+use crate::api::usage::get_account_reset_cards_terminal_output;
 use crate::api::usage::{get_account_usage, refresh_all_usage, warmup_account as send_warmup};
 use crate::auth::{get_account, load_accounts};
 use crate::types::{UsageInfo, WarmupSummary};
@@ -13,6 +14,19 @@ pub async fn get_usage(account_id: String) -> Result<UsageInfo, String> {
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
 
     get_account_usage(&account).await.map_err(|e| e.to_string())
+}
+
+
+/// Get terminal-style Codex reset-card output for one account.
+#[tauri::command]
+pub async fn get_reset_cards(account_id: String) -> Result<String, String> {
+    let account = get_account(&account_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Account not found: {account_id}"))?;
+
+    get_account_reset_cards_terminal_output(&account)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Refresh usage info for all accounts

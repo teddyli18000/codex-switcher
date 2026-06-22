@@ -16,6 +16,8 @@ use crate::types::{
 
 const CHATGPT_BACKEND_API: &str = "https://chatgpt.com/backend-api";
 const CHATGPT_CODEX_RESPONSES_API: &str = "https://chatgpt.com/backend-api/codex/responses";
+const CHATGPT_RESET_CARDS_API: &str =
+    "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 const OPENAI_API: &str = "https://api.openai.com/v1";
 const CODEX_USER_AGENT: &str = "codex-cli/1.0.0";
 
@@ -402,6 +404,103 @@ fn extract_rate_limits(
 
 fn extract_credits(credits: Option<CreditStatusDetails>) -> Option<CreditStatusDetails> {
     credits
+}
+
+
+/// Fetch Codex reset-card information and return terminal-style output.
+pub async fn get_account_reset_cards_terminal_output(account: &StoredAccount) -> Result<String> {
+    match &account.auth_data {
+        AuthData::ApiKey { .. } => Ok(format!(
+            "Codex reset card lookup\n=======================\nAccount: {}\nEmail: {}\nAuth mode: API key\n\nReset card lookup is only available for ChatGPT OAuth accounts.",
+            account.name,
+            account.email.as_deref().unwrap_or("unknown")
+        )),
+        AuthData::ChatGPT { .. } => get_reset_cards_with_chatgpt_auth(account).await,
+    }
+}
+
+async fn get_reset_cards_with_chatgpt_auth(account: &StoredAccount) -> Result<String> {
+    let fresh_account = ensure_chatgpt_tokens_fresh(account).await?;
+    let (access_token, chatgpt_account_id) = extract_chatgpt_auth(&fresh_account)?;
+
+    let response = send_chatgpt_reset_cards_request(access_token, chatgpt_account_id).await?;
+    if response.status() == StatusCode::UNAUTHORIZED {
+        let refreshed_account = refresh_chatgpt_tokens(&fresh_account).await?;
+        let (retry_token, retry_account_id) = extract_chatgpt_auth(&refreshed_account)?;
+        let retry_response = send_chatgpt_reset_cards_request(retry_token, retry_account_id).await?;
+        return format_reset_cards_terminal_output(&refreshed_account, retry_response, true).await;
+    }
+
+    format_reset_cards_terminal_output(&fresh_account, response, false).await
+}
+
+async fn send_chatgpt_reset_cards_request(
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+) -> Result<reqwest::Response> {
+    let client = reqwest::Client::new();
+    let mut headers = build_chatgpt_headers(access_token, chatgpt_account_id)?;
+
+    // Some ChatGPT backend endpoints accept this account routing header. Keep the
+    // existing chatgpt-account-id header too so the known-good usage flow is not disturbed.
+    if let Some(account_id) = chatgpt_account_id {
+        if let Ok(header_name) = HeaderName::from_bytes(b"OpenAI-Account") {
+            headers.insert(
+                header_name,
+                HeaderValue::from_str(account_id).context("Invalid ChatGPT account id")?,
+            );
+        }
+    }
+
+    client
+        .get(CHATGPT_RESET_CARDS_API)
+        .headers(headers)
+        .send()
+        .await
+        .context("Failed to send reset card request")
+}
+
+async fn format_reset_cards_terminal_output(
+    account: &StoredAccount,
+    response: reqwest::Response,
+    retried_after_refresh: bool,
+) -> Result<String> {
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .context("Failed to read reset card response body")?;
+    let pretty_body = serde_json::from_str::<Value>(&body)
+        .ok()
+        .and_then(|value| serde_json::to_string_pretty(&value).ok())
+        .unwrap_or_else(|| body.clone());
+
+    let mut output = String::new();
+    output.push_str("Codex reset card lookup\n");
+    output.push_str("=======================\n");
+    output.push_str(&format!("Account: {}\n", account.name));
+    output.push_str(&format!(
+        "Email: {}\n",
+        account.email.as_deref().unwrap_or("unknown")
+    ));
+    output.push_str(&format!("Endpoint: {}\n", CHATGPT_RESET_CARDS_API));
+    output.push_str(&format!("HTTP status: {}\n", status));
+    output.push_str(&format!(
+        "Retried after token refresh: {}\n",
+        if retried_after_refresh { "yes" } else { "no" }
+    ));
+    output.push_str(&format!("Fetched at: {}\n", chrono::Utc::now().to_rfc3339()));
+    output.push_str("\n--- Complete response body ---\n");
+    if pretty_body.trim().is_empty() {
+        output.push_str("<empty response body>\n");
+    } else {
+        output.push_str(&pretty_body);
+        if !pretty_body.ends_with('\n') {
+            output.push('\n');
+        }
+    }
+
+    Ok(output)
 }
 
 /// Refresh all account usage
