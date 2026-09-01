@@ -1,0 +1,32 @@
+name: Validate final web worker fix #146
+
+on:
+  push:
+    branches:
+      - exp/web-worker-pool-146-final
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dc8f12f2bc0ffe1e8ef6430d2602912d145646f2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Install Tauri dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - run: pnpm install --frozen-lockfile
+      - run: rustfmt --edition 2021 --check src-tauri/src/web.rs
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - run: pnpm build
