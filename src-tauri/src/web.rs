@@ -390,9 +390,7 @@ mod tests {
         stream.flush().expect("flush request");
 
         let mut response = String::new();
-        stream
-            .read_to_string(&mut response)
-            .expect("read response");
+        stream.read_to_string(&mut response).expect("read response");
         response
     }
 
