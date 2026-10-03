@@ -471,8 +471,15 @@ pub fn get_cached_account_data_for_accounts(accounts: &[StoredAccount]) -> Vec<C
                 )) {
                     data.usage = None;
                 }
-                if invalidated.contains(&(account.id.clone(), identity, CachedDataset::Stats)) {
+                if invalidated.contains(&(
+                    account.id.clone(),
+                    identity.clone(),
+                    CachedDataset::Stats,
+                )) {
                     data.stats = None;
+                }
+                if invalidated.contains(&(account.id.clone(), identity, CachedDataset::Metadata)) {
+                    data.metadata = None;
                 }
             }
             data

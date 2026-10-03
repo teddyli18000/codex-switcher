@@ -94,6 +94,7 @@ export function AccountCard({
   onToggleMask,
 }: AccountCardProps) {
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(account.name);
   const [statsOpen, setStatsOpen] = useState<boolean>(() => {
@@ -134,8 +135,11 @@ export function AccountCard({
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
+    setRefreshError(null);
     try {
       await onRefresh();
+    } catch (err) {
+      setRefreshError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsRefreshing(false);
     }
@@ -284,7 +288,7 @@ export function AccountCard({
         <UsageBar
           usage={account.usage}
           loading={isRefreshing || account.usageLoading}
-          refreshError={account.usageRefreshError}
+          refreshError={refreshError ?? account.usageRefreshError}
         />
       </div>
 
