@@ -181,18 +181,10 @@ pub fn record_usage(
         return Ok(false);
     }
 
-    let saved = update_after_refresh(ticket, account, |entry, fetched_at| {
+    update_after_refresh(ticket, account, |entry, fetched_at| {
         entry.usage = Some(usage.clone());
         entry.usage_fetched_at = Some(fetched_at);
-    })?;
-    if saved {
-        clear_dataset_mask(
-            &account.id,
-            ticket.identity.as_deref(),
-            CachedDataset::Usage,
-        );
-    }
-    Ok(saved)
+    })
 }
 
 pub fn record_stats(
@@ -204,18 +196,10 @@ pub fn record_stats(
         return Ok(false);
     }
 
-    let saved = update_after_refresh(ticket, account, |entry, fetched_at| {
+    update_after_refresh(ticket, account, |entry, fetched_at| {
         entry.stats = Some(stats.clone());
         entry.stats_fetched_at = Some(fetched_at);
-    })?;
-    if saved {
-        clear_dataset_mask(
-            &account.id,
-            ticket.identity.as_deref(),
-            CachedDataset::Stats,
-        );
-    }
-    Ok(saved)
+    })
 }
 
 pub fn record_metadata(
@@ -223,18 +207,10 @@ pub fn record_metadata(
     account: &StoredAccount,
     metadata: &ChatGptAccountMetadata,
 ) -> Result<bool, String> {
-    let saved = update_after_refresh(ticket, account, |entry, fetched_at| {
+    update_after_refresh(ticket, account, |entry, fetched_at| {
         entry.metadata = Some(metadata.clone());
         entry.metadata_fetched_at = Some(fetched_at);
-    })?;
-    if saved {
-        clear_dataset_mask(
-            &account.id,
-            ticket.identity.as_deref(),
-            CachedDataset::Metadata,
-        );
-    }
-    Ok(saved)
+    })
 }
 
 fn clear_dataset_mask(account_id: &str, identity: Option<&str>, dataset: CachedDataset) {
@@ -322,6 +298,9 @@ fn update_after_refresh(
     update(entry, Utc::now().timestamp_millis());
 
     write_cache_file(&path, &cache).map_err(|error| error.to_string())?;
+    // Publish the refreshed dataset before releasing the same lock used by
+    // warm-up invalidation and before notifying other windows.
+    clear_dataset_mask(&account.id, Some(identity), ticket.dataset);
     drop(versions);
     drop(_file_lock);
     notify_cache_changed();
