@@ -1,8 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    LazyLock, Mutex,
-};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tauri::{
@@ -13,8 +10,7 @@ use tauri::{
 };
 
 use crate::{
-    api::usage::get_account_usage,
-    auth::{get_account, get_accounts_file, load_accounts, load_app_settings},
+    auth::{get_accounts_file, load_accounts, load_app_settings},
     commands::{
         is_codex_running_switch_block, restore_main_window, switch_account_by_id,
         window::TRAY_WINDOW,
@@ -22,8 +18,6 @@ use crate::{
     types::{AccountsStore, TrayDisplayMode, UsageInfo},
 };
 
-static TRAY_USAGE: LazyLock<Mutex<HashMap<String, UsageInfo>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 static TRAY_SWITCH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static TRAY_SWITCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -34,10 +28,11 @@ const ACCOUNTS_CHANGED_EVENT: &str = "accounts-changed";
 const SWITCH_ACCOUNT_BLOCKED_EVENT: &str = "switch-account-blocked";
 const ACCOUNT_ITEM_PREFIX: &str = "account:";
 const OPEN_ITEM_ID: &str = "open";
+const REFRESH_USAGE_ITEM_ID: &str = "refresh-usage";
 const QUIT_ITEM_ID: &str = "quit";
 const TRAY_WIDTH: f64 = 300.0;
 const TRAY_HEIGHT: f64 = 420.0;
-const ACCOUNT_METADATA_REFRESH_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+const CACHE_EXPIRY_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,7 +45,9 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     #[cfg(not(target_os = "linux"))]
     create_tray_window(app)?;
 
-    let menu = build_menu(app, &load_accounts().unwrap_or_default())?;
+    let store = load_accounts().unwrap_or_default();
+    let cached_usage = cached_usage_by_account(&store);
+    let menu = build_menu(app, &store, &cached_usage)?;
 
     #[cfg(target_os = "linux")]
     let icon = app
@@ -82,10 +79,9 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     refresh_menu(app);
 
     watch_accounts_file(app.clone());
+    watch_cache_expiry(app.clone());
     #[cfg(target_os = "windows")]
     watch_system_theme(app.clone());
-    poll_active_account_usage(app.clone());
-    poll_account_metadata(app.clone());
     Ok(())
 }
 
@@ -215,16 +211,6 @@ fn watch_system_theme<R: Runtime>(app: AppHandle<R>) {
     });
 }
 
-/// Store usage reported by the main app and refresh the native menu labels.
-pub fn ingest_usage<R: Runtime>(app: &AppHandle<R>, usages: Vec<UsageInfo>) {
-    if let Ok(mut cache) = TRAY_USAGE.lock() {
-        for usage in usages {
-            cache.insert(usage.account_id.clone(), usage);
-        }
-    }
-    refresh_menu(app);
-}
-
 // ============================================================================
 // React popup window (used on macOS/Windows via tray click events)
 // ============================================================================
@@ -314,7 +300,11 @@ fn position_near_cursor<R: Runtime>(
 // Native menu (the only tray interaction on Linux; right-click on macOS/Windows)
 // ============================================================================
 
-fn build_menu<R: Runtime>(app: &AppHandle<R>, store: &AccountsStore) -> tauri::Result<Menu<R>> {
+fn build_menu<R: Runtime>(
+    app: &AppHandle<R>,
+    store: &AccountsStore,
+    cached_usage: &HashMap<String, UsageInfo>,
+) -> tauri::Result<Menu<R>> {
     let menu = Menu::new(app)?;
 
     if store.accounts.is_empty() {
@@ -325,7 +315,11 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, store: &AccountsStore) -> tauri::R
         )?;
     } else {
         for account in &store.accounts {
-            let label = format!("{}{}", account.name, usage_suffix(&account.id));
+            let label = format!(
+                "{}{}",
+                account.name,
+                usage_suffix(cached_usage.get(&account.id))
+            );
             let item =
                 CheckMenuItemBuilder::with_id(account_menu_id(&account.id), menu_label(&label))
                     .checked(store.active_account_id.as_deref() == Some(&account.id))
@@ -334,6 +328,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, store: &AccountsStore) -> tauri::R
         }
     }
 
+    menu.append(&MenuItemBuilder::with_id(REFRESH_USAGE_ITEM_ID, "Refresh Usage").build(app)?)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     #[cfg(target_os = "macos")]
     append_dock_settings_menu(app, &menu)?;
@@ -377,6 +372,16 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
 
     match item_id {
         OPEN_ITEM_ID => show_main_window(app),
+        REFRESH_USAGE_ITEM_ID => {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = crate::commands::refresh_all_accounts_usage().await {
+                    eprintln!("Failed to refresh account usage from tray: {error}");
+                }
+                refresh_menu(&app);
+                let _ = app.emit(ACCOUNTS_CHANGED_EVENT, ());
+            });
+        }
         QUIT_ITEM_ID => app.exit(0),
         _ => {
             let Some(account_id) = item_id.strip_prefix(ACCOUNT_ITEM_PREFIX) else {
@@ -430,11 +435,13 @@ fn refresh_menu_on_main_thread<R: Runtime>(app: &AppHandle<R>) {
         .map_err(|error| error.to_string())
         .and_then(|store| {
             let settings = load_app_settings().unwrap_or_default();
+            let cached_usage = cached_usage_by_account(&store);
             let title = active_tray_title(
                 store.active_account_id.as_deref(),
                 settings.tray_display_mode,
+                &cached_usage,
             );
-            let menu = build_menu(app, &store).map_err(|error| error.to_string())?;
+            let menu = build_menu(app, &store, &cached_usage).map_err(|error| error.to_string())?;
             Ok((menu, title, settings.tray_display_mode))
         }) {
         Ok((menu, title, mode)) => {
@@ -506,43 +513,49 @@ fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
 }
 
 // The tray title sits after the icon, e.g. "[icon] 66%".
-fn active_session_title(active_account_id: Option<&str>) -> Option<String> {
+fn active_session_title(
+    active_account_id: Option<&str>,
+    cached_usage: &HashMap<String, UsageInfo>,
+) -> Option<String> {
     let active_account_id = active_account_id?;
-    let cache = TRAY_USAGE.lock().ok()?;
-    let usage = cache.get(active_account_id)?;
+    let usage = cached_usage.get(active_account_id)?;
     session_remaining_title(
         usage.primary_used_percent.or(usage.secondary_used_percent),
         usage.error.is_some(),
     )
 }
 
-fn active_tray_title(active_account_id: Option<&str>, mode: TrayDisplayMode) -> Option<String> {
+fn active_tray_title(
+    active_account_id: Option<&str>,
+    mode: TrayDisplayMode,
+    cached_usage: &HashMap<String, UsageInfo>,
+) -> Option<String> {
     match mode {
-        TrayDisplayMode::IconAndSession => active_session_title(active_account_id),
-        TrayDisplayMode::ActiveUsageText => Some(active_usage_title(active_account_id)),
+        TrayDisplayMode::IconAndSession => active_session_title(active_account_id, cached_usage),
+        TrayDisplayMode::ActiveUsageText => {
+            Some(active_usage_title(active_account_id, cached_usage))
+        }
         TrayDisplayMode::Hidden => None,
     }
 }
 
-fn active_usage_title(active_account_id: Option<&str>) -> String {
+fn active_usage_title(
+    active_account_id: Option<&str>,
+    cached_usage: &HashMap<String, UsageInfo>,
+) -> String {
     let Some(active_account_id) = active_account_id else {
         return "Codex".to_string();
     };
 
-    let usage = TRAY_USAGE
-        .lock()
-        .ok()
-        .and_then(|cache| cache.get(active_account_id).cloned());
+    let usage = cached_usage.get(active_account_id);
 
     match usage {
-        Some(usage) if usage.error.is_none() => {
-            usage_title(
-                usage.primary_used_percent,
-                usage.primary_window_minutes,
-                usage.secondary_used_percent,
-                usage.secondary_window_minutes,
-            )
-        }
+        Some(usage) if usage.error.is_none() => usage_title(
+            usage.primary_used_percent,
+            usage.primary_window_minutes,
+            usage.secondary_used_percent,
+            usage.secondary_window_minutes,
+        ),
         _ => "H:-- W:--".to_string(),
     }
 }
@@ -555,13 +568,13 @@ fn usage_title(
 ) -> String {
     let mut parts = Vec::new();
     if let Some(remaining) = remaining_percent_label(primary_used_percent) {
-        let label = window_duration_label(primary_window_minutes)
-            .unwrap_or_else(|| "H".to_string());
+        let label =
+            window_duration_label(primary_window_minutes).unwrap_or_else(|| "H".to_string());
         parts.push(format!("{label}:{remaining}"));
     }
     if let Some(remaining) = remaining_percent_label(secondary_used_percent) {
-        let label = window_duration_label(secondary_window_minutes)
-            .unwrap_or_else(|| "W".to_string());
+        let label =
+            window_duration_label(secondary_window_minutes).unwrap_or_else(|| "W".to_string());
         parts.push(format!("{label}:{remaining}"));
     }
 
@@ -602,11 +615,8 @@ fn remaining_percent_label(used_percent: Option<f64>) -> Option<String> {
 }
 
 // "  —  S:73% W:51%" remaining-quota suffix for a menu label, or "" when unknown.
-fn usage_suffix(account_id: &str) -> String {
-    let Ok(cache) = TRAY_USAGE.lock() else {
-        return String::new();
-    };
-    let Some(usage) = cache.get(account_id) else {
+fn usage_suffix(usage: Option<&UsageInfo>) -> String {
+    let Some(usage) = usage else {
         return String::new();
     };
     if usage.error.is_some() {
@@ -615,8 +625,8 @@ fn usage_suffix(account_id: &str) -> String {
 
     let mut parts = Vec::new();
     if let Some(remaining) = session_remaining_title(usage.primary_used_percent, false) {
-        let label = window_duration_label(usage.primary_window_minutes)
-            .unwrap_or_else(|| "S".to_string());
+        let label =
+            window_duration_label(usage.primary_window_minutes).unwrap_or_else(|| "S".to_string());
         parts.push(format!("{label}:{remaining}"));
     }
     if let Some(used) = usage.secondary_used_percent {
@@ -669,60 +679,25 @@ fn watch_accounts_file<R: Runtime>(app: AppHandle<R>) {
     });
 }
 
+/// Re-read the local cache periodically so tray values disappear at expiry.
+fn watch_cache_expiry<R: Runtime>(app: AppHandle<R>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(CACHE_EXPIRY_REFRESH_INTERVAL);
+        refresh_menu(&app);
+    });
+}
+
 fn modified_at(path: &std::path::Path) -> Option<std::time::SystemTime> {
     path.metadata()
         .and_then(|metadata| metadata.modified())
         .ok()
 }
 
-/// Poll the active account's usage so the tray title stays fresh even when the
-/// main window's webview poller is hidden or suspended by the OS.
-fn poll_active_account_usage<R: Runtime>(app: AppHandle<R>) {
-    std::thread::spawn(move || loop {
-        let account = load_accounts()
-            .ok()
-            .and_then(|store| store.active_account_id)
-            .and_then(|id| get_account(&id).ok().flatten());
-
-        if let Some(account) = account {
-            match tauri::async_runtime::block_on(get_account_usage(&account)) {
-                // Keep the last known title on transient fetch errors.
-                Ok(usage) => ingest_usage(&app, vec![usage]),
-                Err(error) => eprintln!("Failed to poll usage for tray title: {error}"),
-            }
-        }
-
-        std::thread::sleep(Duration::from_secs(60));
-    });
-}
-
-/// Keep subscription dates current even when the main webview is hidden or
-/// suspended. Live metadata stays in memory and is announced to the webviews.
-fn poll_account_metadata<R: Runtime>(app: AppHandle<R>) {
-    std::thread::spawn(move || loop {
-        let accounts = load_accounts()
-            .map(|store| store.accounts)
-            .unwrap_or_default();
-
-        for account in accounts {
-            if matches!(account.auth_data, crate::types::AuthData::ApiKey { .. }) {
-                continue;
-            }
-
-            if tauri::async_runtime::block_on(crate::commands::refresh_account_metadata(account.id))
-                .is_err()
-            {
-                eprintln!(
-                    "[Account] Failed to refresh subscription metadata for: {}",
-                    account.name
-                );
-            }
-        }
-
-        let _ = app.emit(ACCOUNTS_CHANGED_EVENT, ());
-
-        std::thread::sleep(ACCOUNT_METADATA_REFRESH_INTERVAL);
-    });
+fn cached_usage_by_account(store: &AccountsStore) -> HashMap<String, UsageInfo> {
+    crate::account_data_cache::get_cached_account_data_for_accounts(&store.accounts)
+        .into_iter()
+        .filter_map(|cached| cached.usage.map(|usage| (cached.account_id, usage)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -831,17 +806,17 @@ mod tests {
             usage_title(None, None, Some(35.0), Some(7 * 24 * 60)),
             "7d:65%"
         );
-        assert_eq!(
-            usage_title(Some(27.0), Some(5 * 60), None, None),
-            "5h:73%"
-        );
+        assert_eq!(usage_title(Some(27.0), Some(5 * 60), None, None), "5h:73%");
         assert_eq!(usage_title(None, None, None, None), "H:-- W:--");
     }
 
     #[test]
     fn window_duration_labels_round_to_hours_and_days() {
         assert_eq!(window_duration_label(Some(5 * 60)), Some("5h".to_string()));
-        assert_eq!(window_duration_label(Some(12 * 60)), Some("12h".to_string()));
+        assert_eq!(
+            window_duration_label(Some(12 * 60)),
+            Some("12h".to_string())
+        );
         assert_eq!(
             window_duration_label(Some(7 * 24 * 60)),
             Some("7d".to_string())
@@ -856,14 +831,19 @@ mod tests {
 
     #[test]
     fn active_usage_title_falls_back_when_usage_is_missing() {
-        assert_eq!(active_usage_title(Some("missing")), "H:-- W:--");
-        assert_eq!(active_usage_title(None), "Codex");
+        let cached_usage = HashMap::new();
+        assert_eq!(
+            active_usage_title(Some("missing"), &cached_usage),
+            "H:-- W:--"
+        );
+        assert_eq!(active_usage_title(None, &cached_usage), "Codex");
     }
 
     #[test]
     fn hidden_tray_mode_has_no_title() {
+        let cached_usage = HashMap::new();
         assert_eq!(
-            active_tray_title(Some("active"), TrayDisplayMode::Hidden),
+            active_tray_title(Some("active"), TrayDisplayMode::Hidden, &cached_usage),
             None
         );
     }

@@ -1,7 +1,7 @@
 {
   "name": "codex-switcher",
   "private": true,
-  "version": "0.2.20",
+  "version": "0.2.21",
   "description": "A multi-account manager for Codex CLI",
   "type": "module",
   "scripts": {
@@ -11,7 +11,6 @@
     "test:browser-runtime": "node --experimental-strip-types --test tests/browserRuntime.test.ts",
     "test:close-preference": "node --experimental-strip-types --test tests/codexClosePreference.test.ts",
     "test:reset-credits": "node --experimental-strip-types --test tests/resetCredits.test.ts",
-    "test:updater": "node --experimental-strip-types --test tests/updateInstallation.test.ts tests/updaterToolchain.test.ts",
     "preview": "vite preview",
     "tauri": "sh ./scripts/tauri.sh",
     "tauri:win": "tauri",
@@ -24,14 +23,13 @@
     "release:patch": "node scripts/release.mjs patch",
     "release:minor": "node scripts/release.mjs minor",
     "release:major": "node scripts/release.mjs major",
-    "test": "node --experimental-strip-types --test tests/*.test.*"
+    "test": "node --experimental-strip-types --test tests/*.test.*",
+    "test:packaging": "node --experimental-strip-types --test tests/packagingToolchain.test.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.0",
     "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-opener": "^2",
-    "@tauri-apps/plugin-process": "^2",
-    "@tauri-apps/plugin-updater": "^2.10.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

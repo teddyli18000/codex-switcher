@@ -94,6 +94,19 @@ export interface AccountUsageStats {
   error: string | null;
 }
 
+export interface CachedAccountData {
+  account_id: string;
+  usage: UsageInfo | null;
+  usage_fetched_at: number | null;
+  stats: AccountUsageStats | null;
+  stats_fetched_at: number | null;
+  metadata: {
+    plan_type: string | null;
+    subscription_expires_at: string | null;
+  } | null;
+  metadata_fetched_at: number | null;
+}
+
 export interface OAuthLoginInfo {
   auth_url: string;
   callback_port: number;
@@ -101,7 +114,12 @@ export interface OAuthLoginInfo {
 
 export interface AccountWithUsage extends AccountInfo {
   usage?: UsageInfo;
+  usageFetchedAt: number | null;
   usageLoading?: boolean;
+  usageRefreshError?: string | null;
+  stats: AccountUsageStats | null;
+  statsFetchedAt: number | null;
+  metadataFetchedAt: number | null;
 }
 
 export interface CodexProcessInfo {

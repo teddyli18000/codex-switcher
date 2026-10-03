@@ -21,11 +21,11 @@
 - **Quick Switching** – Switch between accounts from the main window, native tray menu, or tray popup while preserving rotated ChatGPT sessions
 - **Usage Stats** – View account usage stats for OAuth accounts, including lifetime tokens, daily buckets, streaks, activity insights, and top integrations
 - **Manual Reset Credits** – See available manual reset credits beside each account plan badge, with the closest expiry highlighted as it approaches
-- **Automatic Warm-Up** – Warm up one account or all accounts manually, after each 5-hour reset window, or at specific scheduled times of day
+- **Manual and Timed Warm-Up** – Warm up accounts by clicking a button or at explicitly configured daily times while the app is running
 - **System Tray Controls** – Use the tray popup to switch accounts, inspect quota and active-account stats, refresh usage, open the main window, or quit the app
 - **Tray Display Modes** – Choose between the app icon with session percentage, a text-only hourly/weekly percentage display, or a hidden tray icon
 - **macOS Dock Control** – Keep Codex Switcher in the Dock or run it as a menu bar only app, with a first-close prompt and a tray fallback
-- **Rate-Limit Monitoring** – View real-time 5-hour session and weekly usage, reset timing, credits, and subscription expiry
+- **Manual Usage Refresh** – View last-fetched quota, reset timing, credits, and subscription information with a persistent, expiring cache
 - **Blocked Switch Recovery** – Detect running Codex sessions and offer a force-close flow before retrying the account switch
 - **Dual Login Mode** – Authenticate with ChatGPT OAuth or import existing `auth.json` files
 
@@ -35,7 +35,11 @@
 
 The easiest way to install Codex Switcher is from the latest GitHub release:
 
-[Download the latest release](https://github.com/Lampese/codex-switcher/releases/latest)
+[Download the latest release](https://github.com/teddyli18000/codex-switcher/releases)
+
+The personal v0.2.21 release provides a Windows x64 NSIS installer for installing
+over the existing app. Its assets include the exact source commit and SHA256.
+The older `v1` release does not implement the current fork policy.
 
 Choose the file for your platform:
 
@@ -54,11 +58,17 @@ Choose the file for your platform:
 > open "/Applications/Codex Switcher.app"
 > ```
 
-### Auto Updates
+### Personal fork behavior
 
-Codex Switcher checks the latest GitHub release on startup. When a newer signed
-update package is available, the app shows an update prompt and can install it
-from inside the app.
+Usage, subscription information, and statistics are fetched only by explicit
+refresh actions. Startup, opening the tray, and cache expiry do not fetch data.
+Successful results are saved locally for five minutes, so a quick restart keeps
+them. The UI shows the last refresh time and hides expired values. Quota reset
+boundaries may expire data earlier.
+
+This fork has no updater or telemetry reporting. Download and install updates
+manually from this fork. See [the fork policy](docs/FORK_POLICY.md) for the
+network contract and upgrade checks.
 
 ### Build from Source
 
@@ -70,7 +80,7 @@ from inside the app.
 
 ```bash
 # Clone the repository
-git clone https://github.com/Lampese/codex-switcher.git
+git clone https://github.com/teddyli18000/codex-switcher.git
 cd codex-switcher
 
 # Install dependencies
@@ -133,7 +143,7 @@ account to `~/.codex/auth.json`, it now saves the latest tokens from the account
 that is currently active. Switching back therefore restores the current session
 instead of an older snapshot.
 
-Token refreshes and account switches are serialized so a background refresh
+Token refreshes and account switches are serialized so a concurrent refresh
 cannot finish late and overwrite the account you just selected. Codex Switcher
 also avoids refreshing the active account while Codex or ChatGPT is running;
 close the running app before switching accounts.
@@ -159,19 +169,16 @@ A warm-up sends one minimal request to an account so its current usage window
 has activity before you need it.
 
 - **Manual** – warm up a single or all accounts, from the main window or tray menu.
-- **Automatic** – when enabled (per account or for all), the app tracks the
-  5-hour window when available and warms it after each reset, as long as the
-  weekly limit isn't exhausted. If only the weekly window is available, it
-  warms once after the weekly reset and automatically returns to the 5-hour
-  schedule if that window reappears.
 - **Timed** – pick specific times of day (e.g. `08:00`, `13:00`, `18:00`) from
   the **Timed** control in the main window. At each time the app warms all
-  accounts (skipping any whose weekly limit is exhausted), so you control when
+  accounts (skipping any whose valid cache shows exhausted weekly quota), so you control when
   your 5-hour windows start instead of letting them drift.
 
 Timed warm-up checks the schedule every 30 seconds, runs each configured minute
 only once per day, and skips missed times if the machine was asleep instead of
-warming accounts late.
+warming accounts late. It is an application-owned schedule: quitting the app
+stops it. It never installs an operating-system scheduled task or service.
+Warm-up works without a usage cache and does not fetch usage automatically.
 
 On macOS you can keep the machine awake with the built-in `caffeinate` command,
 which stops automatically when the app quits:

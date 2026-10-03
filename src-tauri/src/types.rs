@@ -364,9 +364,9 @@ impl AccountInfo {
             id: account.id.clone(),
             name: account.name.clone(),
             email: account.email.clone(),
-            plan_type: account.plan_type.clone(),
-            // Subscription expiry is live account metadata. Stored values and
-            // ID-token claims become stale and must not be used for display.
+            // Plan and subscription metadata are displayed only from a valid
+            // explicit-refresh cache entry.
+            plan_type: None,
             subscription_expires_at: None,
             auth_mode: account.auth_mode,
             is_active: active_id == Some(&account.id),

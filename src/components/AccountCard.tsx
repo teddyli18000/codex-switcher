@@ -1,11 +1,10 @@
-import { useCallback, useState, useRef, useEffect } from "react";
-import type { AccountResetCredits, AccountUsageStats as AccountUsageStatsInfo, AccountWithUsage } from "../types";
-import { invokeBackend } from "../lib/platform";
+import { useState, useRef, useEffect } from "react";
+import type { AccountWithUsage } from "../types";
+import { formatCacheAge, isCacheTimestampFresh } from "../lib/accountCache";
 import { AccountUsageStats } from "./AccountUsageStats";
 import { ResetCreditsMenu } from "./ResetCreditsMenu";
 import { UsageBar } from "./UsageBar";
 
-const RESET_CREDITS_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const USAGE_STATS_OPEN_STORAGE_KEY_PREFIX = "usage-stats-open:";
 
 interface AccountCardProps {
@@ -21,21 +20,6 @@ interface AccountCardProps {
   warmingUp?: boolean;
   masked?: boolean;
   onToggleMask?: () => void;
-  autoWarmupEnabled?: boolean;
-  autoWarmupManagedByAll?: boolean;
-  autoWarmupLabel?: string;
-  onToggleAutoWarmup?: () => void;
-}
-
-function formatLastRefresh(date: Date | null): string {
-  if (!date) return "Never";
-  const now = new Date();
-  const diff = Math.floor((now.getTime() - date.getTime()) / 1000);
-  if (diff < 5) return "Just now";
-  if (diff < 60) return `${diff}s ago`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return date.toLocaleDateString();
 }
 
 function getSubscriptionStatus(timestamp: string | null | undefined): {
@@ -108,18 +92,10 @@ export function AccountCard({
   warmingUp,
   masked = false,
   onToggleMask,
-  autoWarmupEnabled = false,
-  autoWarmupManagedByAll = false,
-  autoWarmupLabel,
-  onToggleAutoWarmup,
 }: AccountCardProps) {
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [lastRefresh, setLastRefresh] = useState<Date | null>(
-    account.usage && !account.usage.error ? new Date() : null
-  );
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(account.name);
-  const [resetCredits, setResetCredits] = useState<AccountResetCredits | null>(null);
   const [statsOpen, setStatsOpen] = useState<boolean>(() => {
     if (typeof window === "undefined") return account.is_active;
     try {
@@ -133,7 +109,6 @@ export function AccountCard({
     return account.is_active;
   });
   const inputRef = useRef<HTMLInputElement>(null);
-  const resetRequestSeq = useRef(0);
 
   const toggleStatsOpen = () => {
     setStatsOpen((prev) => {
@@ -156,12 +131,6 @@ export function AccountCard({
       inputRef.current.select();
     }
   }, [isEditing]);
-
-  useEffect(() => {
-    if (account.usage && !account.usage.error) {
-      setLastRefresh(new Date());
-    }
-  }, [account.usage]);
 
   const handleRefresh = async () => {
     setIsRefreshing(true);
@@ -216,48 +185,9 @@ export function AccountCard({
     account.auth_mode === "chat_g_p_t" && account.plan_type?.toLowerCase() !== "free";
   const subscriptionStatus = getSubscriptionStatus(account.subscription_expires_at);
   const compactResetCredits = !account.is_active;
-
-  const loadResetCredits = useCallback(async () => {
-    const requestId = ++resetRequestSeq.current;
-
-    if (account.auth_mode !== "chat_g_p_t") {
-      setResetCredits(null);
-      return;
-    }
-
-    try {
-      const stats = await invokeBackend<AccountUsageStatsInfo>("get_account_usage_stats", {
-        accountId: account.id,
-      });
-      if (requestId !== resetRequestSeq.current) return;
-      setResetCredits(stats.account_id === account.id ? stats.reset_credits : null);
-    } catch {
-      if (requestId !== resetRequestSeq.current) return;
-      setResetCredits(null);
-    }
-  }, [account.auth_mode, account.id]);
-
-  const handleStatsLoaded = useCallback(
-    (stats: AccountUsageStatsInfo | null) => {
-      setResetCredits(stats?.account_id === account.id ? stats.reset_credits : null);
-    },
-    [account.id]
-  );
-
-  useEffect(() => {
-    setResetCredits(null);
-
-    void loadResetCredits();
-    const timer = window.setInterval(() => {
-      void loadResetCredits();
-    }, RESET_CREDITS_REFRESH_INTERVAL_MS);
-
-    return () => {
-      resetRequestSeq.current += 1;
-      window.clearInterval(timer);
-    };
-  }, [loadResetCredits]);
-
+  const cacheNow = Date.now();
+  const usageFresh = Boolean(account.usage) && isCacheTimestampFresh(account.usageFetchedAt, cacheNow);
+  const usageAge = formatCacheAge(account.usageFetchedAt, cacheNow);
 
   return (
     <div
@@ -344,20 +274,28 @@ export function AccountCard({
           </span>
           <ResetCreditsMenu
             compact={compactResetCredits}
-            resetCredits={resetCredits}
+            resetCredits={account.stats?.reset_credits ?? null}
           />
         </div>
       </div>
 
       {/* Usage */}
       <div className="mb-3">
-        <UsageBar usage={account.usage} loading={isRefreshing || account.usageLoading} />
+        <UsageBar
+          usage={account.usage}
+          loading={isRefreshing || account.usageLoading}
+          refreshError={account.usageRefreshError}
+        />
       </div>
 
       {/* Last refresh time */}
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs mb-3">
         <div className="text-gray-400 dark:text-gray-500">
-          Last updated: {formatLastRefresh(lastRefresh)}
+          {usageFresh
+            ? `Cached usage · updated ${usageAge}`
+            : account.usageFetchedAt !== null
+              ? `Usage expired · last successful refresh ${usageAge}. Refresh to update.`
+              : "No cached usage · select refresh to load."}
         </div>
         {showSubscriptionStatus && (
           <div className={`text-right ${subscriptionStatus.className}`}>
@@ -408,29 +346,6 @@ export function AccountCard({
         >
           ⚡
         </button>
-        {onToggleAutoWarmup && (
-          <button
-            onClick={onToggleAutoWarmup}
-            disabled={autoWarmupManagedByAll}
-            className={`px-3 py-2 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
-              autoWarmupEnabled
-                ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300"
-                : "bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300"
-            } disabled:opacity-60`}
-            title={
-              autoWarmupManagedByAll
-                ? "Auto warm-up is enabled for all accounts"
-                : autoWarmupEnabled
-                  ? "Disable auto warm-up for this account"
-                : "Enable auto warm-up for this account"
-            }
-          >
-            <span className="flex items-center gap-1">
-              <span>♻</span>
-              <span>{autoWarmupLabel ?? (autoWarmupEnabled ? "on" : "off")}</span>
-            </span>
-          </button>
-        )}
         <button
           onClick={toggleStatsOpen}
           className={`px-3 py-2 text-sm rounded-lg transition-colors ${
@@ -465,9 +380,8 @@ export function AccountCard({
         accountId={account.id}
         enabled={account.auth_mode === "chat_g_p_t"}
         open={statsOpen}
-        usage={account.usage}
-        usageLoading={account.usageLoading}
-        onStatsLoaded={handleStatsLoaded}
+        stats={account.stats}
+        statsFetchedAt={account.statsFetchedAt}
       />
     </div>
   );

@@ -25,14 +25,15 @@ pub struct CloseBehaviorRequestedPayload {
     pub request_id: u64,
 }
 
-/// Receive the main app's polled usage so the tray menu can show remaining quota
-/// without doing its own fetching. The main window is the single usage poller.
+/// Backward-compatible refresh hint from older clients.
+/// Renderer-provided values never replace the backend's authoritative cache.
 #[tauri::command]
 pub fn report_usage(app: AppHandle, usages: Vec<UsageInfo>) {
+    let _ = usages;
     #[cfg(desktop)]
-    crate::tray::ingest_usage(&app, usages);
+    crate::tray::refresh(&app);
     #[cfg(not(desktop))]
-    let _ = (app, usages);
+    let _ = app;
 }
 
 /// Hide the tray popup window (called by the tray UI after an action).

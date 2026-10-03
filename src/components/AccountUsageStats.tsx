@@ -1,48 +1,23 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AccountDailyUsage,
   AccountTopInvocation,
   AccountUsageStats as AccountUsageStatsInfo,
-  UsageInfo,
 } from "../types";
 import { invokeBackend } from "../lib/platform";
+import {
+  ACCOUNT_CACHE_CHANGED_EVENT,
+  formatCacheAge,
+  getCachedAccountDataForDisplay,
+  readCachedAccountData,
+} from "../lib/accountCache";
 
 interface AccountUsageStatsProps {
   accountId: string;
   enabled: boolean;
   open: boolean;
-  usage?: UsageInfo;
-  usageLoading?: boolean;
-  onStatsLoaded?: (stats: AccountUsageStatsInfo | null) => void;
-}
-
-function emptyStats(accountId: string, error: string): AccountUsageStatsInfo {
-  return {
-    account_id: accountId,
-    available: false,
-    source: "Codex usage stats via ChatGPT backend",
-    generated_at: null,
-    stats_as_of: null,
-    summary: {
-      lifetime_tokens: null,
-      peak_daily_tokens: null,
-      longest_task_seconds: null,
-      current_streak_days: null,
-      longest_streak_days: null,
-    },
-    activity: {
-      fast_mode_percent: null,
-      reasoning_effort: null,
-      reasoning_effort_percent: null,
-      skills_explored: null,
-      total_skills_used: null,
-      total_threads: null,
-    },
-    daily: [],
-    top_invocations: [],
-    reset_credits: null,
-    error,
-  };
+  stats: AccountUsageStatsInfo | null;
+  statsFetchedAt: number | null;
 }
 
 function formatTokens(tokens: number | null | undefined): string {
@@ -346,71 +321,88 @@ export function AccountUsageStats({
   accountId,
   enabled,
   open,
-  usage,
-  usageLoading = false,
-  onStatsLoaded,
+  stats,
+  statsFetchedAt,
 }: AccountUsageStatsProps) {
-  const [stats, setStats] = useState<AccountUsageStatsInfo | null>(null);
+  const [cachedStats, setCachedStats] = useState<AccountUsageStatsInfo | null>(stats);
+  const [cachedFetchedAt, setCachedFetchedAt] = useState<number | null>(statsFetchedAt);
   const [loading, setLoading] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const requestSeq = useRef(0);
-  const backgroundInFlight = useRef(false);
-  const lastObservedUsage = useRef<UsageInfo | undefined>(usage);
-
-  const loadStats = useCallback(async (background = false) => {
-    if (background && backgroundInFlight.current) return;
-    const requestId = ++requestSeq.current;
-
-    if (!enabled) {
-      if (background) return;
-      const next = emptyStats(accountId, "Usage stats are available for ChatGPT accounts only.");
-      setStats(next);
-      onStatsLoaded?.(next);
-      setLoading(false);
-      return;
-    }
-
-    if (background) {
-      backgroundInFlight.current = true;
-    } else {
-      setLoading(true);
-    }
-    try {
-      const next = await invokeBackend<AccountUsageStatsInfo>("get_account_usage_stats", {
-        accountId,
-      });
-      if (requestId !== requestSeq.current) return;
-      if (background && (!next.available || next.error)) return;
-      setStats(next);
-      onStatsLoaded?.(next);
-    } catch (err) {
-      if (background || requestId !== requestSeq.current) return;
-      const next = emptyStats(accountId, err instanceof Error ? err.message : String(err));
-      setStats(next);
-      onStatsLoaded?.(next);
-    } finally {
-      if (background) {
-        backgroundInFlight.current = false;
-      } else if (requestId === requestSeq.current) {
-        setLoading(false);
-      }
-    }
-  }, [accountId, enabled, onStatsLoaded]);
+  const observedFetchedAt = useRef(statsFetchedAt);
 
   useEffect(() => {
     requestSeq.current += 1;
-    setStats(null);
-    onStatsLoaded?.(null);
+    setCachedStats(null);
+    setCachedFetchedAt(null);
     setLoading(false);
-  }, [accountId, onStatsLoaded]);
+    setRefreshError(null);
+  }, [accountId]);
 
   useEffect(() => {
-    const usageChanged = usage !== lastObservedUsage.current;
-    lastObservedUsage.current = usage;
-    if (!usageChanged || !enabled || !open || usageLoading || !usage || usage.error) return;
-    void loadStats(true);
-  }, [enabled, loadStats, open, usage, usageLoading]);
+    setCachedStats(stats?.account_id === accountId ? stats : null);
+    setCachedFetchedAt(stats?.account_id === accountId ? statsFetchedAt : null);
+    setNow(Date.now());
+    if (observedFetchedAt.current !== statsFetchedAt) setRefreshError(null);
+    observedFetchedAt.current = statsFetchedAt;
+  }, [accountId, stats, statsFetchedAt]);
 
-  const currentStats = stats?.account_id === accountId ? stats : null;
+  useEffect(() => {
+    if (!open) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [open]);
+
+  const handleRefresh = async () => {
+    if (!enabled || loading) return;
+    const requestId = ++requestSeq.current;
+    setLoading(true);
+    setRefreshError(null);
+    try {
+      const response = await invokeBackend<AccountUsageStatsInfo>("get_account_usage_stats", {
+        accountId,
+      });
+      if (response.account_id !== accountId) {
+        throw new Error("The statistics response belongs to a different account.");
+      }
+      if (response.error) throw new Error(response.error);
+      const entries = await readCachedAccountData();
+      if (requestId !== requestSeq.current) return;
+      const entry = entries.find((candidate) => candidate.account_id === accountId);
+      const visible = entry ? getCachedAccountDataForDisplay(entry, Date.now()) : null;
+      if (!visible?.stats || visible.stats.account_id !== accountId) {
+        throw new Error("The refreshed statistics were not available in the local cache.");
+      }
+      setCachedStats(visible.stats);
+      setCachedFetchedAt(visible.stats_fetched_at);
+      setNow(Date.now());
+      window.dispatchEvent(new Event(ACCOUNT_CACHE_CHANGED_EVENT));
+    } catch (err) {
+      if (requestId === requestSeq.current) {
+        setRefreshError(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      if (requestId === requestSeq.current) setLoading(false);
+    }
+  };
+
+  const matchingEntry = cachedStats?.account_id === accountId
+    ? {
+        account_id: accountId,
+        usage: null,
+        usage_fetched_at: null,
+        stats: cachedStats,
+        stats_fetched_at: cachedFetchedAt,
+        metadata: null,
+        metadata_fetched_at: null,
+      }
+    : null;
+  const visibleStats = matchingEntry
+    ? getCachedAccountDataForDisplay(matchingEntry, now).stats
+    : null;
+  const currentStats = visibleStats?.account_id === accountId ? visibleStats : null;
+  const currentFetchedAt = currentStats ? cachedFetchedAt : statsFetchedAt;
   const generatedAt = currentStats ? formatGeneratedAt(currentStats.generated_at) : "";
   const todayTokens = currentStats ? sumDays(currentStats.daily, 1) : null;
   const sevenDayTokens = currentStats ? sumDays(currentStats.daily, 7) : null;
@@ -423,11 +415,16 @@ export function AccountUsageStats({
       <div>
         <div className="mb-3 flex items-center justify-between gap-3">
           <p className="truncate text-[11px] text-gray-500 dark:text-gray-400">
-            {currentStats?.stats_as_of ? `Stats as of ${currentStats.stats_as_of}` : currentStats?.source ?? "ChatGPT backend"}
-            {generatedAt && ` · updated ${generatedAt}`}
+            {currentStats
+              ? `Cached snapshot · updated ${formatCacheAge(currentFetchedAt, now)}`
+              : currentFetchedAt !== null
+                ? `Stats expired · last successful refresh ${formatCacheAge(currentFetchedAt, now)}`
+                : "No cached statistics · select refresh to load."}
+            {currentStats?.stats_as_of && ` · stats as of ${currentStats.stats_as_of}`}
+            {generatedAt && ` · generated ${generatedAt}`}
           </p>
           <button
-            onClick={() => void loadStats()}
+            onClick={() => void handleRefresh()}
             disabled={loading || !enabled}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-600 transition-colors hover:bg-gray-200 disabled:opacity-50 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
             title="Refresh usage stats"
@@ -435,6 +432,12 @@ export function AccountUsageStats({
             <span className={loading ? "inline-block animate-spin" : ""}>↻</span>
           </button>
         </div>
+
+        {refreshError && (
+          <p className="mb-2 text-xs text-red-600 dark:text-red-400">
+            Refresh failed: {refreshError}
+          </p>
+        )}
 
         {loading && !currentStats ? (
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
@@ -463,7 +466,7 @@ export function AccountUsageStats({
           </div>
         ) : (
           <div className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
-            {currentStats?.error ?? "Usage stats unavailable."}
+            {currentStats?.error ?? refreshError ?? "No current cached statistics. Select refresh to load."}
           </div>
         )}
       </div>

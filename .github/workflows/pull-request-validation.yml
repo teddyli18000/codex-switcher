@@ -1,10 +1,12 @@
-name: Pull Request Validation
+name: Fork Validation
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
 concurrency:
-  group: pr-validation-${{ github.event.pull_request.number }}
+  group: fork-validation-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -69,6 +71,11 @@ jobs:
           fi
 
       - name: Run Rust tests
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Run Rust tests
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
   platform-check:
@@ -84,6 +91,11 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Compile platform-specific Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
 
       - name: Compile platform-specific Rust
         run: cargo check --locked --manifest-path src-tauri/Cargo.toml

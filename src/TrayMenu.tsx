@@ -1,17 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import type { AccountInfo, AccountUsageStats, DockDisplayMode, UsageInfo } from "./types";
 import { invokeBackend, isTauriRuntime } from "./lib/platform";
+import { formatCacheAge } from "./lib/accountCache";
+import { useCachedAccountData } from "./hooks/useCachedAccountData";
 import {
   applyTheme,
   syncThemeFromStorage,
   THEME_CHANGED_EVENT,
   type ThemeMode,
 } from "./lib/theme";
-import {
-  AUTO_WARMUP_ALL_CHANGED_EVENT,
-  readAutoWarmupAllEnabled,
-  writeAutoWarmupAllEnabled,
-} from "./lib/autoWarmup";
 
 const TRAY_REFRESH_EVENT = "tray-refresh";
 const ACCOUNTS_CHANGED_EVENT = "accounts-changed";
@@ -113,99 +110,42 @@ function sumDailyTokens(stats: AccountUsageStats, days: number): number {
   return stats.daily.reduce((total, day) => (keys.has(day.date) ? total + day.tokens : total), 0);
 }
 
-function retainUsageForAccounts(
-  usageById: Record<string, UsageInfo>,
-  accounts: AccountInfo[]
-): Record<string, UsageInfo> {
-  return Object.fromEntries(
-    accounts.flatMap((account) =>
-      usageById[account.id] ? [[account.id, usageById[account.id]]] : []
-    )
-  );
-}
-
 function TrayMenu() {
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [usageById, setUsageById] = useState<Record<string, UsageInfo>>({});
-  const [statsById, setStatsById] = useState<Record<string, AccountUsageStats>>({});
+  const [refreshErrors, setRefreshErrors] = useState<Record<string, string | null>>({});
   const [refreshing, setRefreshing] = useState(false);
-  const [autoWarmupAllEnabled, setAutoWarmupAllEnabled] = useState(readAutoWarmupAllEnabled);
   const [dockDisplayMode, setDockDisplayMode] = useState<DockDisplayMode | null>(null);
+  const { cacheByAccountId, error: cacheError, reload: reloadCache } = useCachedAccountData();
 
-  // Fetch each account's rate-limit usage in parallel; rows fill in as they land.
   const loadUsage = useCallback(async (list: AccountInfo[]) => {
-    await Promise.all(
-      list.map(async (account) => {
-        try {
-          const usage = await invokeBackend<UsageInfo>("get_usage", {
-            accountId: account.id,
-          });
-          setUsageById((prev) => ({ ...prev, [account.id]: usage }));
-        } catch (err) {
-          setUsageById((prev) => ({
-            ...prev,
-            [account.id]: {
-              account_id: account.id,
-              plan_type: account.plan_type,
-              primary_used_percent: null,
-              primary_window_minutes: null,
-              primary_resets_at: null,
-              secondary_used_percent: null,
-              secondary_window_minutes: null,
-              secondary_resets_at: null,
-              has_credits: null,
-              unlimited_credits: null,
-              credits_balance: null,
-              error: formatError(err),
-            },
-          }));
-        }
-      })
-    );
+    const errors = new Map<string, string>();
+    await Promise.all(list.map(async (account) => {
+      try {
+        const usage = await invokeBackend<UsageInfo>("get_usage", {
+          accountId: account.id,
+        });
+        if (usage.error) errors.set(account.id, usage.error);
+      } catch (err) {
+        errors.set(account.id, formatError(err));
+      }
+    }));
+    return errors;
   }, []);
 
   const loadActiveStats = useCallback(async (list: AccountInfo[]) => {
     const active = list.find((account) => account.is_active);
-    if (!active) return;
+    if (!active || active.auth_mode !== "chat_g_p_t") return new Map<string, string>();
 
     try {
       const stats = await invokeBackend<AccountUsageStats>("get_account_usage_stats", {
         accountId: active.id,
       });
-      setStatsById((prev) => ({ ...prev, [active.id]: stats }));
+      return stats.error ? new Map([[active.id, stats.error]]) : new Map<string, string>();
     } catch (err) {
-      setStatsById((prev) => ({
-        ...prev,
-        [active.id]: {
-          account_id: active.id,
-          available: false,
-          source: "Codex usage stats via ChatGPT backend",
-          generated_at: null,
-          stats_as_of: null,
-          summary: {
-            lifetime_tokens: null,
-            peak_daily_tokens: null,
-            longest_task_seconds: null,
-            current_streak_days: null,
-            longest_streak_days: null,
-          },
-          activity: {
-            fast_mode_percent: null,
-            reasoning_effort: null,
-            reasoning_effort_percent: null,
-            skills_explored: null,
-            total_skills_used: null,
-            total_threads: null,
-          },
-          daily: [],
-          top_invocations: [],
-          reset_credits: null,
-          error: formatError(err),
-        },
-      }));
+      return new Map([[active.id, formatError(err)]]);
     }
   }, []);
 
@@ -223,47 +163,45 @@ function TrayMenu() {
       void loadDockDisplayMode();
       const list = await invokeBackend<AccountInfo[]>("list_accounts");
       setAccounts(list);
-      setUsageById((prev) => retainUsageForAccounts(prev, list));
+      setRefreshErrors((prev) =>
+        Object.fromEntries(Object.entries(prev).filter(([id]) => list.some((account) => account.id === id))),
+      );
       setError(null);
-      void loadUsage(list); // Don't block the list render on the usage calls.
-      void loadActiveStats(list);
+      await reloadCache();
     } catch (err) {
       setError(formatError(err));
     } finally {
       setLoading(false);
     }
-  }, [loadActiveStats, loadDockDisplayMode, loadUsage]);
+  }, [loadDockDisplayMode, reloadCache]);
 
-  // Manual refresh: re-pull accounts and actively fetch fresh usage once.
+  // Manual refresh is the only tray action that fetches usage or statistics.
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
       const list = await invokeBackend<AccountInfo[]>("list_accounts");
       setAccounts(list);
-      setUsageById((prev) => retainUsageForAccounts(prev, list));
       setError(null);
-      await Promise.all([loadUsage(list), loadActiveStats(list)]);
+      const [usageErrors, statsErrors] = await Promise.all([
+        loadUsage(list),
+        loadActiveStats(list),
+      ]);
+      const errors = new Map([...usageErrors, ...statsErrors]);
+      setRefreshErrors((prev) => {
+        const next = { ...prev };
+        for (const account of list) next[account.id] = errors.get(account.id) ?? null;
+        return next;
+      });
+      await reloadCache();
+      if (errors.size > 0) {
+        setError(`Refresh failed for ${errors.size} account${errors.size === 1 ? "" : "s"}.`);
+      }
     } catch (err) {
       setError(formatError(err));
     } finally {
       setRefreshing(false);
     }
-  }, [loadActiveStats, loadUsage]);
-
-  const handleAutoWarmupToggle = useCallback(async () => {
-    const next = !autoWarmupAllEnabled;
-    setAutoWarmupAllEnabled(next);
-    try {
-      writeAutoWarmupAllEnabled(next);
-      if (isTauriRuntime()) {
-        const { emit } = await import("@tauri-apps/api/event");
-        await emit(AUTO_WARMUP_ALL_CHANGED_EVENT, next);
-      }
-    } catch (err) {
-      setAutoWarmupAllEnabled(!next);
-      setError(formatError(err));
-    }
-  }, [autoWarmupAllEnabled]);
+  }, [loadActiveStats, loadUsage, reloadCache]);
 
   const handleDockDisplayMode = useCallback(
     async (mode: DockDisplayMode) => {
@@ -282,19 +220,21 @@ function TrayMenu() {
     [dockDisplayMode]
   );
 
+  useEffect(() => {
+    void load();
+  }, [load]);
+
   // Reload when the tray is reopened or accounts change elsewhere.
   useEffect(() => {
     if (!isTauriRuntime()) return;
     let unlistenRefresh: (() => void) | undefined;
     let unlistenChanged: (() => void) | undefined;
     let unlistenTheme: (() => void) | undefined;
-    let unlistenAutoWarmup: (() => void) | undefined;
 
     void (async () => {
       const { listen } = await import("@tauri-apps/api/event");
       unlistenRefresh = await listen(TRAY_REFRESH_EVENT, () => {
         syncThemeFromStorage();
-        setAutoWarmupAllEnabled(readAutoWarmupAllEnabled());
         void load();
       });
       unlistenChanged = await listen(ACCOUNTS_CHANGED_EVENT, () => void load());
@@ -303,21 +243,12 @@ function TrayMenu() {
           applyTheme(payload);
         }
       });
-      unlistenAutoWarmup = await listen<boolean>(
-        AUTO_WARMUP_ALL_CHANGED_EVENT,
-        ({ payload }) => {
-          if (typeof payload === "boolean") {
-            setAutoWarmupAllEnabled(payload);
-          }
-        }
-      );
     })();
 
     return () => {
       unlistenRefresh?.();
       unlistenChanged?.();
       unlistenTheme?.();
-      unlistenAutoWarmup?.();
     };
   }, [load]);
 
@@ -361,26 +292,10 @@ function TrayMenu() {
         </div>
         <span className="text-sm font-semibold">Codex Switcher</span>
         <button
-          onClick={() => void handleAutoWarmupToggle()}
-          disabled={accounts.length === 0}
-          title={
-            autoWarmupAllEnabled
-              ? "Disable auto warm-up for all accounts"
-              : "Enable auto warm-up for all accounts"
-          }
-          className={`ml-auto rounded-md px-2 py-1 text-[11px] font-semibold transition-colors disabled:opacity-50 ${
-            autoWarmupAllEnabled
-              ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-900/20 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
-              : "bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-          }`}
-        >
-          Auto: {autoWarmupAllEnabled ? "on" : "off"}
-        </button>
-        <button
+          className="ml-auto flex h-6 w-6 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100"
           onClick={() => void handleRefresh()}
           disabled={refreshing}
           title="Refresh usage"
-          className="flex h-6 w-6 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100"
         >
           <span className={`text-base leading-none ${refreshing ? "inline-block animate-spin" : ""}`}>
             ↻
@@ -399,9 +314,13 @@ function TrayMenu() {
           </div>
         ) : (
           accounts.map((account) => {
-            const plan = formatPlan(account.plan_type);
-            const usage = usageById[account.id];
-            const stats = statsById[account.id];
+            const cached = cacheByAccountId.get(account.id);
+            const plan = formatPlan(cached?.metadata?.plan_type ?? cached?.usage?.plan_type ?? null);
+            const usage = cached?.usage;
+            const stats = cached?.stats;
+            const usageAge = formatCacheAge(cached?.usage_fetched_at ?? null);
+            const statsAge = formatCacheAge(cached?.stats_fetched_at ?? null);
+            const refreshError = refreshErrors[account.id];
             const windows =
               usage && !usage.error
                 ? ([
@@ -506,6 +425,15 @@ function TrayMenu() {
                       {account.email}
                     </span>
                   ) : null}
+                  <span className={`mt-1 block truncate text-[10px] ${refreshError ? "text-red-500 dark:text-red-400" : "text-gray-400 dark:text-gray-500"}`}>
+                    {refreshError
+                      ? `Refresh failed: ${refreshError}`
+                      : usage
+                        ? `Cached usage · updated ${usageAge}`
+                        : cached?.usage_fetched_at != null
+                          ? `Usage expired · last refreshed ${usageAge}`
+                          : "No cached usage · refresh manually"}
+                  </span>
                   {account.is_active && stats?.available && (
                     <span className="mt-2 grid grid-cols-2 gap-1.5">
                       <span className="rounded-md bg-white px-2 py-1 text-[11px] text-gray-600 shadow-sm dark:bg-gray-950 dark:text-gray-300">
@@ -522,6 +450,15 @@ function TrayMenu() {
                       </span>
                     </span>
                   )}
+                  {account.is_active && (
+                    <span className="mt-1 block truncate text-[10px] text-gray-400 dark:text-gray-500">
+                      {stats
+                        ? `Cached stats · updated ${statsAge}`
+                        : cached?.stats_fetched_at != null
+                          ? `Stats expired · last refreshed ${statsAge}`
+                          : "No cached stats · refresh manually"}
+                    </span>
+                  )}
                 </span>
                 {switchingId === account.id && (
                   <span className="shrink-0 text-xs text-gray-400">...</span>
@@ -532,9 +469,9 @@ function TrayMenu() {
         )}
       </div>
 
-      {error && (
+      {(error ?? cacheError) && (
         <div className="border-t border-gray-100 px-3 py-2 text-xs text-red-600 dark:border-gray-800 dark:text-red-400">
-          {error}
+          {error ?? cacheError}
         </div>
       )}
 

@@ -199,6 +199,7 @@ pub fn remove_account(account_id: &str) -> Result<()> {
     }
 
     save_accounts(&store)?;
+    crate::account_data_cache::remove_account_cache(account_id).map_err(anyhow::Error::msg)?;
     Ok(())
 }
 

@@ -7,7 +7,7 @@ use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, USER_AGENT},
     StatusCode,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -32,7 +32,7 @@ const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
 const SESSION_WINDOW_SECONDS: i32 = 5 * 60 * 60;
 const WEEKLY_WINDOW_SECONDS: i32 = 7 * 24 * 60 * 60;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatGptAccountMetadata {
     pub plan_type: Option<String>,
     pub subscription_expires_at: Option<DateTime<Utc>>,

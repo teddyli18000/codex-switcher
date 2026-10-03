@@ -13,9 +13,10 @@ use crate::commands::{
     add_account_from_auth_json_text, add_account_from_file, cancel_login, check_codex_processes,
     complete_login, delete_account, export_accounts_full_encrypted_bytes,
     export_accounts_slim_text, fetch_usage, get_account_usage_stats, get_active_account_info,
-    get_masked_account_ids, import_accounts_full_encrypted_bytes, import_accounts_slim_text,
-    kill_codex_processes, list_accounts, refresh_account_metadata, refresh_all_accounts_usage,
-    rename_account, set_masked_account_ids, start_login, switch_account, warmup_account,
+    get_cached_account_data, get_masked_account_ids, get_warmup_schedule,
+    import_accounts_full_encrypted_bytes, import_accounts_slim_text, kill_codex_processes,
+    list_accounts, refresh_account_metadata, refresh_all_accounts_usage, rename_account,
+    set_masked_account_ids, set_warmup_schedule, start_login, switch_account, warmup_account,
     warmup_all_accounts,
 };
 
@@ -78,11 +79,21 @@ struct FileImportArgs {
     name: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct SetWarmupScheduleArgs {
+    enabled: bool,
+    times: Vec<String>,
+}
+
 pub fn run_lan_server(host: &str, port: u16) -> anyhow::Result<()> {
     let address = format!("{host}:{port}");
     let server = Server::http(&address)
         .map_err(|err| anyhow::anyhow!("Failed to bind HTTP server on {address}: {err}"))?;
     let runtime = Runtime::new().context("Failed to start async runtime")?;
+    {
+        let _entered = runtime.enter();
+        crate::warmup_schedule::start_for_web();
+    }
     let dist_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("dist");
@@ -149,6 +160,7 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
             let args: AccountIdArgs = parse_args(payload)?;
             to_json(fetch_usage(&args.account_id).await?)
         }
+        "get_cached_account_data" => to_json(get_cached_account_data()),
         "get_account_usage_stats" => {
             let args: AccountIdArgs = parse_args(payload)?;
             to_json(get_account_usage_stats(args.account_id).await?)
@@ -158,6 +170,11 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
             to_json(refresh_account_metadata(args.account_id).await?)
         }
         "refresh_all_accounts_usage" => to_json(refresh_all_accounts_usage().await?),
+        "get_warmup_schedule" => to_json(get_warmup_schedule()?),
+        "set_warmup_schedule" => {
+            let args: SetWarmupScheduleArgs = parse_args(payload)?;
+            to_json(set_warmup_schedule(args.enabled, args.times)?)
+        }
         "warmup_account" => {
             let args: AccountIdArgs = parse_args(payload)?;
             to_json(warmup_account(args.account_id).await?)

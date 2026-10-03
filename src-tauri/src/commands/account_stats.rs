@@ -7,6 +7,7 @@ use reqwest::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::account_data_cache::{self, CachedDataset};
 use crate::auth::{ensure_chatgpt_tokens_fresh, load_accounts, refresh_chatgpt_tokens};
 use crate::types::{AuthData, AuthMode, StoredAccount};
 
@@ -15,7 +16,7 @@ const CHATGPT_RESET_CREDITS_URL: &str =
     "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 const CODEX_USER_AGENT: &str = "codex-cli/1.0.0";
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountUsageStats {
     pub account_id: String,
     pub available: bool,
@@ -30,7 +31,7 @@ pub struct AccountUsageStats {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AccountUsageSummary {
     pub lifetime_tokens: Option<i64>,
     pub peak_daily_tokens: Option<i64>,
@@ -39,7 +40,7 @@ pub struct AccountUsageSummary {
     pub longest_streak_days: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AccountUsageActivity {
     pub fast_mode_percent: Option<f64>,
     pub reasoning_effort: Option<String>,
@@ -49,13 +50,13 @@ pub struct AccountUsageActivity {
     pub total_threads: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountDailyUsage {
     pub date: String,
     pub tokens: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountTopInvocation {
     pub kind: String,
     pub display_name: String,
@@ -66,14 +67,14 @@ pub struct AccountTopInvocation {
     pub skill_name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountResetCredits {
     pub available_count: i64,
     pub next_expires_at: Option<String>,
     pub credits: Vec<AccountResetCredit>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountResetCredit {
     pub id: String,
     pub reset_type: String,
@@ -199,9 +200,20 @@ pub async fn get_account_usage_stats(account_id: String) -> Result<AccountUsageS
         ));
     }
 
-    fetch_profile_usage(account)
+    let ticket = account_data_cache::begin_refresh(account, CachedDataset::Stats);
+    let stats = fetch_profile_usage(account)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if stats.available
+        && !account_data_cache::record_stats(&ticket, account, &stats)
+            .map_err(|error| format!("Failed to save usage statistics cache: {error}"))?
+    {
+        return Err(
+            "The statistics result was superseded or could not be assigned to this account"
+                .to_string(),
+        );
+    }
+    Ok(stats)
 }
 
 async fn fetch_profile_usage(account: &StoredAccount) -> anyhow::Result<AccountUsageStats> {

@@ -74,13 +74,15 @@ struct SlimAccountPayload {
 pub async fn list_accounts() -> Result<Vec<AccountInfo>, String> {
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
+    let cached_data =
+        crate::account_data_cache::get_cached_account_data_for_accounts(&store.accounts);
 
     let accounts: Vec<AccountInfo> = store
         .accounts
         .iter()
         .map(|a| {
             let mut info = AccountInfo::from_stored(a, active_id);
-            super::usage::apply_cached_account_metadata(&mut info);
+            super::usage::apply_cached_account_metadata(&mut info, &cached_data);
             info
         })
         .collect();
@@ -93,10 +95,12 @@ pub async fn list_accounts() -> Result<Vec<AccountInfo>, String> {
 pub async fn get_active_account_info() -> Result<Option<AccountInfo>, String> {
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
+    let cached_data =
+        crate::account_data_cache::get_cached_account_data_for_accounts(&store.accounts);
 
     if let Some(active) = get_active_account().map_err(|e| e.to_string())? {
         let mut info = AccountInfo::from_stored(&active, active_id);
-        super::usage::apply_cached_account_metadata(&mut info);
+        super::usage::apply_cached_account_metadata(&mut info, &cached_data);
         Ok(Some(info))
     } else {
         Ok(None)
